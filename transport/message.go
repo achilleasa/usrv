@@ -44,6 +44,9 @@ type Message interface {
 	// SetHeader sets the content of a message header to the specified value.
 	// If the specified header already exists, its value will be overwritten
 	// by the new value.
+	//
+	// This method must ensure that header names are always canonicalized
+	// using an algorithm similar to http.CanonicalHeaderKey.
 	SetHeader(name, value string)
 
 	// SetHeaders sets the contents of a batch of headers. This is equivalent
