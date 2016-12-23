@@ -10,6 +10,8 @@ const (
 	pathDelimiter = "/"
 )
 
+type changeCallbackFn func(*node)
+
 // Node is used as the building block of a configuration tree. Nodes that
 // serve as the tree leaves store a string value while non-leaf nodes maintain
 // a map containing their child nodes.
@@ -109,6 +111,11 @@ func (n *node) leafValues(pathPrefix string, isRoot bool) map[string]string {
 // updating leaf nodes for which the curently stored value version is less than or
 // equal to the supplied version.
 //
+// If the caller needs to be notified when a particular node in the tree is modified
+// either directly (its value changed) or indirectly (its subtree got modified)
+// it can specify a callback which will be invoked with every modified node as
+// its argument.
+//
 // Merge accepts an interface for its value but in practice only supports
 // two types of values:
 //  - A string value which only gets applied if this node is a leaf after a version check
@@ -119,7 +126,7 @@ func (n *node) leafValues(pathPrefix string, isRoot bool) map[string]string {
 //
 // A boolean flag is returned as an indicator of whether the subtree rooted
 // at this node was modified as a result of applying the given value.
-func (n *node) merge(version int, value interface{}) (modified bool) {
+func (n *node) merge(version int, value interface{}, changeCallback changeCallbackFn) (modified bool) {
 	switch mergeValue := value.(type) {
 	case string:
 		// Current node version is newer than the value we are trying to merge
@@ -132,6 +139,11 @@ func (n *node) merge(version int, value interface{}) (modified bool) {
 		if len(n.paths) != 0 {
 			n.paths = make(map[string]*node, 0)
 		}
+
+		if changeCallback != nil {
+			changeCallback(n)
+		}
+
 		return true
 	case map[string]interface{}:
 		// Skip value if the map is empty
@@ -161,7 +173,11 @@ func (n *node) merge(version int, value interface{}) (modified bool) {
 			if subPathNode == nil {
 				subPathNode = makeNode(k, n.depth+1, n)
 			}
-			modified = subPathNode.merge(version, v) || modified
+			modified = subPathNode.merge(version, v, changeCallback) || modified
+		}
+
+		if modified && changeCallback != nil {
+			changeCallback(n)
 		}
 
 		return modified

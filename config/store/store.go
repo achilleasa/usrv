@@ -223,7 +223,7 @@ func (s *Store) SetKeys(version int, path string, values map[string]string) (sto
 
 func (s *Store) set(version int, path string, value interface{}) bool {
 	root := s.lookup(path, true)
-	return root.merge(version, value)
+	return root.merge(version, value, nil)
 }
 
 // Lookup searches the configuration tree for a particular path and returns
