@@ -3,6 +3,7 @@ package store
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestLookup(t *testing.T) {
@@ -251,4 +252,120 @@ func TestGetWithNonExistingPath(t *testing.T) {
 	if len(values) != 0 {
 		t.Fatalf("expected Get with non-existing path to return an empty map; got %v", values)
 	}
+}
+
+func TestWatchersForKeyNotYetInStore(t *testing.T) {
+	var s Store
+
+	var cfgChans [2]<-chan map[string]string
+	var unsubFn UnsubscribeFunc
+	cfgChans[0], unsubFn = s.Watch("/foo/bar")
+	defer unsubFn()
+
+	cfgChans[1], unsubFn = s.Watch("foo/bar")
+	defer unsubFn()
+
+	// Both channels should receive an empty map as the key does not exist yet
+	for index, cfgChan := range cfgChans {
+		select {
+		case cfg := <-cfgChan:
+			if len(cfg) != 0 {
+				t.Errorf("expected cfgChan %d to receive an empty map", index)
+			}
+		case <-time.After(1 * time.Second):
+			t.Errorf("time out waiting for cfgChan %d to receive initial cfg", index)
+		}
+
+	}
+
+	// Set value and trigger registered watchers
+	expValue := "test"
+	s.SetKey(1, "/foo/bar", expValue)
+
+	// Both channels should receive an update with the value we just set
+	for index, cfgChan := range cfgChans {
+		select {
+		case cfg := <-cfgChan:
+			if len(cfg) != 1 {
+				t.Errorf("expected cfgChan %d to receive a non-empty map", index)
+			}
+			for _, v := range cfg {
+				if v != expValue {
+					t.Errorf("expected cfgChan %d to receive value %q; got %q", index, expValue, v)
+				}
+			}
+		case <-time.After(1 * time.Second):
+			t.Errorf("time out waiting for cfgChan %d to receive updated cfg", index)
+		}
+	}
+}
+
+func TestWatchersUnsubscribe(t *testing.T) {
+	var s Store
+
+	// Calling unwatch when no watchers are defined should be ok
+	s.unwatch("/a/path", 1)()
+
+	cfgChan, unsubFn := s.Watch("/foo/bar")
+	<-cfgChan
+
+	// Setting a key for a path not watched should be ok
+	s.SetKey(1, "/another/path", "new value")
+
+	// Unsubscribe should prevent further changes from beeing sent to the channel
+	unsubFn()
+
+	// Ensure that the watcher has been removed
+	remainingPathWatchers := len(s.watchers["/foo/bar"])
+	if remainingPathWatchers != 0 {
+		t.Fatalf("expected path wathers list to be empty; got %d entries\n", remainingPathWatchers)
+	}
+
+	s.SetKey(1, "/foo/bar", "new value")
+
+	_, opened := <-cfgChan
+	if opened {
+		t.Fatalf("expected cfg channel to be closed after unsubscribing")
+	}
+
+	// Calling unwatch on an unknown path while at least one watcher is defined should be ok
+	s.unwatch("/a/path", 1)()
+}
+
+func TestWatchersNotificationFanout(t *testing.T) {
+	var s Store
+	defer func() {
+		beforeUpdateHookFn = nil
+		afterUpdateHookFn = nil
+	}()
+
+	cfgChan, unsubFn := s.Watch("/foo/bar")
+	checkpoint := make(chan struct{}, 0)
+
+	afterUpdateHookFn = func() {
+		checkpoint <- struct{}{}
+	}
+
+	// Trigger an update before dequeuing current value
+	s.SetKey(1, "/foo/bar", "new value v1")
+
+	// wait for fanout go-routine to exit
+	<-checkpoint
+
+	cfg := <-cfgChan
+	if len(cfg) != 0 {
+		t.Fatalf("expected to receive empty map for the original path values")
+	}
+
+	// Block the fanout go-routine and then trigger an unsubscribe before
+	// proceeding with the fanout
+	beforeUpdateHookFn = func() {
+		<-checkpoint
+	}
+	s.SetKey(2, "/foo/bar", "new value v2")
+	unsubFn()
+
+	// Unblock goroutine and wait til it exits
+	checkpoint <- struct{}{}
+	<-checkpoint
 }
