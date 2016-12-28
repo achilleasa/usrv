@@ -90,6 +90,15 @@ type Store struct {
 	watchers      map[string][]changeWatcher
 }
 
+// Reset deletes the store's contents and removes any associated change watchers.
+func (s *Store) Reset() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.root = nil
+	s.watchers = nil
+}
+
 // Get retrieves the configuration sub-tree rooted at the given path and returns
 // a map containing the configuration values stored at its leaves. The map keys
 // are the full paths to the leaves relative to the node rooted at the given path.
