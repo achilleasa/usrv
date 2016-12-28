@@ -6,6 +6,28 @@ import (
 	"time"
 )
 
+func TestReset(t *testing.T) {
+	var s Store
+
+	path := "bar"
+	expValue := "value"
+	s.SetKey(1, path, expValue)
+	_, unsubFn := s.Watch(path)
+	cfg := s.Get(path)
+	if cfg[path] != expValue {
+		t.Fatalf("expected cfg value for path %q to be %q; got %q", path, expValue, cfg[path])
+	}
+
+	s.Reset()
+	cfg = s.Get(path)
+	if len(cfg) != 0 {
+		t.Fatalf("expected cfg after reset to be empty; got %v", cfg)
+	}
+
+	// Unusbscribing post-reset should be a no-op
+	unsubFn()
+}
+
 func TestLookup(t *testing.T) {
 	var s Store
 
