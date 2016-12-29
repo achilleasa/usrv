@@ -197,6 +197,10 @@ func (s *Store) SetKey(version int, path, value string) (storeUpdated bool, err 
 // The method returns a boolean flag to indicate whether the store was updated
 // by any of the supplied values.
 func (s *Store) SetKeys(version int, path string, values map[string]string) (storeUpdated bool, err error) {
+	if values == nil || len(values) == 0 {
+		return false, nil
+	}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 

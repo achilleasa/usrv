@@ -124,6 +124,26 @@ func TestSetKey(t *testing.T) {
 	}
 }
 
+func TestSetKeysWithNilValues(t *testing.T) {
+	var s Store
+
+	modified, err := s.SetKeys(1, "/foo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modified {
+		t.Fatal("expected SetKeys with nil map not to modify store")
+	}
+
+	modified, err = s.SetKeys(1, "/foo", map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modified {
+		t.Fatal("expected SetKeys with empty map not to modify store")
+	}
+}
+
 func TestSetKeys(t *testing.T) {
 	var s Store
 
