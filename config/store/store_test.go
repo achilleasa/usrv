@@ -489,6 +489,25 @@ func TestMisbehavingValueProvider(t *testing.T) {
 	}
 }
 
+func TestValueProviderShouldNotDeadlockStore(t *testing.T) {
+	var s Store
+	provider := &badDataProvider{watchTriggersSetter: true}
+
+	path := "/foo/bar"
+
+	// Register provider and add watch; s.Watch calls the value setter while inside
+	// Watch(); this shouldn't cause a deadlock
+	s.RegisterValueProvider(provider)
+	cfgChan, unsubFn := s.Watch(path)
+	defer unsubFn()
+
+	// The store should fail applying the provider's value and return back the empty initial value
+	cfgValue := <-cfgChan
+	if len(cfgValue) != 0 {
+		t.Fatalf("expected store to return an empty map")
+	}
+}
+
 type mockProvider struct {
 	store Store
 }
@@ -515,6 +534,7 @@ func (p *mockProvider) Watch(path string, valueSetter func(string, map[string]st
 }
 
 type badDataProvider struct {
+	watchTriggersSetter bool
 }
 
 func (p *badDataProvider) Get(path string) map[string]string {
@@ -525,5 +545,8 @@ func (p *badDataProvider) Get(path string) map[string]string {
 }
 
 func (p *badDataProvider) Watch(path string, valueSetter func(string, map[string]string)) func() {
+	if p.watchTriggersSetter {
+		valueSetter(path, map[string]string{"foo": "bar"})
+	}
 	return func() {}
 }
