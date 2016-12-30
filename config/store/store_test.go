@@ -9,6 +9,9 @@ import (
 func TestReset(t *testing.T) {
 	var s Store
 
+	provider := &mockProvider{}
+	s.RegisterValueProvider(provider)
+
 	path := "bar"
 	expValue := "value"
 	s.SetKey(1, path, expValue)
@@ -185,7 +188,7 @@ func TestSetKeys(t *testing.T) {
 	}
 }
 
-func TestSetKeysErrors(t *testing.T) {
+func TestStoreSetKeysErrors(t *testing.T) {
 	var s Store
 
 	valueMapWithPathClash := map[string]string{
@@ -195,7 +198,7 @@ func TestSetKeysErrors(t *testing.T) {
 	expError := `supplied value map contains both a value and a sub-path for "key1/key2"`
 	_, err := s.SetKeys(1, "", valueMapWithPathClash)
 	if err == nil || err.Error() != expError {
-		t.Fatalf("expected to get error %q; got %v", expError, err)
+		t.Errorf("expected to get error %q; got %v", expError, err)
 	}
 
 	valueMapWithEmptyPath := map[string]string{
@@ -205,7 +208,7 @@ func TestSetKeysErrors(t *testing.T) {
 	expError = `supplied value map contains empty path key`
 	_, err = s.SetKeys(1, "", valueMapWithEmptyPath)
 	if err == nil || err.Error() != expError {
-		t.Fatalf("expected to get error %q; got %v", expError, err)
+		t.Errorf("expected to get error %q; got %v", expError, err)
 	}
 
 	valueMapWithEmptySegment := map[string]string{
@@ -315,7 +318,7 @@ func TestWatchersForKeyNotYetInStore(t *testing.T) {
 				t.Errorf("expected cfgChan %d to receive an empty map", index)
 			}
 		case <-time.After(1 * time.Second):
-			t.Errorf("time out waiting for cfgChan %d to receive initial cfg", index)
+			t.Errorf("timeout waiting for cfgChan %d to receive initial cfg", index)
 		}
 
 	}
@@ -337,8 +340,47 @@ func TestWatchersForKeyNotYetInStore(t *testing.T) {
 				}
 			}
 		case <-time.After(1 * time.Second):
-			t.Errorf("time out waiting for cfgChan %d to receive updated cfg", index)
+			t.Errorf("timeout waiting for cfgChan %d to receive updated cfg", index)
 		}
+	}
+}
+
+func TestWatchersDropUpdateIfChannelIsFull(t *testing.T) {
+	var s Store
+
+	var cfgChans [2]<-chan map[string]string
+	var unsubFn UnsubscribeFunc
+	cfgChans[0], unsubFn = s.Watch("/foo/bar")
+	defer unsubFn()
+
+	cfgChans[1], unsubFn = s.Watch("foo/bar")
+	defer unsubFn()
+
+	// Fetch initial value (empty map) from the first channel
+	cfg := <-cfgChans[0]
+	if len(cfg) != 0 {
+		t.Errorf("expected cfgChan 0 to receive an empty map")
+	}
+
+	// Set value and trigger registered watchers
+	expValue := "test"
+	s.SetKey(1, "/foo/bar", expValue)
+
+	// First channel should receive the update
+	cfg = <-cfgChans[0]
+	if len(cfg) != 1 {
+		t.Errorf("expected cfgChan 0 to receive a non-empty map")
+	}
+	for _, v := range cfg {
+		if v != expValue {
+			t.Errorf("expected cfgChan 0 to receive value %q; got %q", expValue, v)
+		}
+	}
+
+	// second channel should drop the update as we didn't yet pull out the initial value
+	cfg = <-cfgChans[1]
+	if len(cfg) != 0 {
+		t.Errorf("expected cfgChan 1 to receive an empty map")
 	}
 }
 
@@ -374,40 +416,114 @@ func TestWatchersUnsubscribe(t *testing.T) {
 	s.unwatch("/a/path", 1)()
 }
 
-func TestWatchersNotificationFanout(t *testing.T) {
+func TestValueProvider(t *testing.T) {
 	var s Store
-	defer func() {
-		beforeUpdateHookFn = nil
-		afterUpdateHookFn = nil
+	provider := &mockProvider{}
+
+	s.RegisterValueProvider(provider)
+
+	path := "/foo/bar"
+	cfgChan, unsubFn := s.Watch(path)
+	defer unsubFn()
+
+	// Discard current value
+	<-cfgChan
+
+	// Trigger the mockProvider watch for path
+	expValue := "value"
+	expCfgMap := map[string]string{
+		"bar": expValue,
+	}
+	provider.store.SetKey(1, path, expValue)
+
+	// Ensure that the path value propagates from the provider to the store watcher
+	select {
+	case cfgValue := <-cfgChan:
+		if !reflect.DeepEqual(cfgValue, expCfgMap) {
+			t.Fatalf("expected to receive config value:\n%v\n\ngot:\n%v", expCfgMap, cfgValue)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timeout waiting for watcher")
+	}
+}
+
+func TestValueProviderThatAlreadyContainsPath(t *testing.T) {
+	var s Store
+	provider := &mockProvider{}
+
+	path := "/foo/bar"
+	expValue := "value"
+	provider.store.SetKey(1, path, expValue)
+
+	// Register provider and add watch
+	s.RegisterValueProvider(provider)
+	cfgChan, unsubFn := s.Watch(path)
+	defer unsubFn()
+
+	// The store should apply the provider's value and return that as the initial value
+	cfgValue := <-cfgChan
+
+	expCfgMap := map[string]string{
+		"bar": expValue,
+	}
+	if !reflect.DeepEqual(cfgValue, expCfgMap) {
+		t.Fatalf("expected to receive config value:\n%v\n\ngot:\n%v", expCfgMap, cfgValue)
+	}
+}
+
+func TestMisbehavingValueProvider(t *testing.T) {
+	var s Store
+	provider := &badDataProvider{}
+
+	path := "/foo/bar"
+
+	// Register provider and add watch
+	s.RegisterValueProvider(provider)
+	cfgChan, unsubFn := s.Watch(path)
+	defer unsubFn()
+
+	// The store should fail applying the provider's value and return back the empty initial value
+	cfgValue := <-cfgChan
+	if len(cfgValue) != 0 {
+		t.Fatalf("expected store to return an empty map")
+	}
+}
+
+type mockProvider struct {
+	store Store
+}
+
+func (p *mockProvider) Get(path string) map[string]string {
+	return p.store.Get(path)
+}
+
+func (p *mockProvider) Watch(path string, valueSetter func(string, map[string]string)) func() {
+	cfgChan, unsubFn := p.store.Watch(path)
+	// Discard initial value
+	<-cfgChan
+	go func() {
+		for {
+			cfg, ok := <-cfgChan
+			if !ok {
+				return
+			}
+			valueSetter(path, cfg)
+		}
 	}()
 
-	cfgChan, unsubFn := s.Watch("/foo/bar")
-	checkpoint := make(chan struct{}, 0)
+	return unsubFn
+}
 
-	afterUpdateHookFn = func() {
-		checkpoint <- struct{}{}
+type badDataProvider struct {
+}
+
+func (p *badDataProvider) Get(path string) map[string]string {
+	return map[string]string{
+		"key1/key2":      "2",
+		"key1/key2/key3": "3",
 	}
+}
 
-	// Trigger an update before dequeuing current value
-	s.SetKey(1, "/foo/bar", "new value v1")
-
-	// wait for fanout go-routine to exit
-	<-checkpoint
-
-	cfg := <-cfgChan
-	if len(cfg) != 0 {
-		t.Fatalf("expected to receive empty map for the original path values")
-	}
-
-	// Block the fanout go-routine and then trigger an unsubscribe before
-	// proceeding with the fanout
-	beforeUpdateHookFn = func() {
-		<-checkpoint
-	}
-	s.SetKey(2, "/foo/bar", "new value v2")
-	unsubFn()
-
-	// Unblock goroutine and wait til it exits
-	checkpoint <- struct{}{}
-	<-checkpoint
+func (p *badDataProvider) Watch(path string, valueSetter func(string, map[string]string)) func() {
+	return func() {}
 }

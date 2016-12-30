@@ -10,10 +10,6 @@ import (
 
 var (
 	splitRegex = regexp.MustCompile(pathDelimiter + "+")
-
-	// Internal hooks for testing notification fanout go-routines in our tests.
-	beforeUpdateHookFn func()
-	afterUpdateHookFn  func()
 )
 
 // UnsubscribeFunc cancels a change watcher associated with a configuration store.
@@ -26,11 +22,16 @@ type changeWatcher struct {
 	// A channel where configuration changes are published.
 	changeChan chan map[string]string
 
-	// A signal channel that is closed when the watcher is destroyed and before
-	// changeChan is closed. As the actual event fanout is facilitated via a
-	// goroutine this channel ensures that the goroutine will not attempt
-	// to write to the closed changeChan.
-	doneChan chan struct{}
+	// A set of unsubscribe functions for each registered value provider.
+	providerUnsubscribeFn []func()
+}
+
+type valueProvider struct {
+	instance ValueProvider
+
+	// A value setter that links the provider instance with a particular
+	// store and config value version.
+	valueSetFunc func(string, map[string]string)
 }
 
 // Store implements a versioned and thread-safe configuration store. A tree
@@ -88,6 +89,7 @@ type Store struct {
 	root          *node
 	nextWatcherID int
 	watchers      map[string][]changeWatcher
+	providers     []*valueProvider
 }
 
 // Reset deletes the store's contents and removes any associated change watchers.
@@ -95,8 +97,39 @@ func (s *Store) Reset() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	s.root = nil
+	if s.watchers != nil {
+		for _, pathWatchers := range s.watchers {
+			for _, watcher := range pathWatchers {
+				for _, providerUnsubFn := range watcher.providerUnsubscribeFn {
+					providerUnsubFn()
+				}
+				watcher.providerUnsubscribeFn = nil
+			}
+		}
+	}
 	s.watchers = nil
+	s.root = nil
+}
+
+// RegisterValueProvider connects a configuration value provider instance with
+// this store. The order of provider registration is important as defines the
+// priority for the configuration values emitted by each provider. Providers
+// should be registered in low to high priority order.
+func (s *Store) RegisterValueProvider(provider ValueProvider) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if s.providers == nil {
+		s.providers = make([]*valueProvider, 0)
+	}
+
+	priority := len(s.providers) + 1
+	s.providers = append(s.providers, &valueProvider{
+		instance: provider,
+		valueSetFunc: func(path string, values map[string]string) {
+			s.SetKeys(priority, path, values)
+		},
+	})
 }
 
 // Get retrieves the configuration sub-tree rooted at the given path and returns
@@ -204,52 +237,12 @@ func (s *Store) SetKeys(version int, path string, values map[string]string) (sto
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	// convert values from flat key format to a nested tree format:
-	// from:
-	// {"segment1/segment2.../segment_n": value}
-	//
-	// to:
-	// {"segment1": {
-	//   "segment2": { ...
-	//     {"segment_n": value}
-	//   }
-	//}
-	root := make(map[string]interface{}, 0)
-	var segmentMap *map[string]interface{}
-	for path, v := range values {
-		if len(path) == 0 {
-			return false, fmt.Errorf("supplied value map contains empty path key")
-		}
-		segments := splitRegex.Split(path, -1)
-		lastSegment := len(segments) - 1
-
-		segmentMap = &root
-		for index, segment := range segments {
-			if len(segment) == 0 {
-				return false, fmt.Errorf("supplied value map contains empty segment for path %q", path)
-			}
-
-			switch {
-			case index == lastSegment:
-				(*segmentMap)[segment] = v
-			case (*segmentMap)[segment] != nil:
-				// Subpath already created by another path; we need to ensure
-				// that the it points to a map and not a string
-				subPath := (*segmentMap)[segment]
-				subPathMap, isMap := subPath.(map[string]interface{})
-				if !isMap {
-					return false, fmt.Errorf("supplied value map contains both a value and a sub-path for %q", strings.Join(segments[:index+1], pathDelimiter))
-				}
-				segmentMap = &subPathMap
-			default:
-				subPathMap := make(map[string]interface{})
-				(*segmentMap)[segment] = subPathMap
-				segmentMap = &subPathMap
-			}
-		}
+	valueTree, err := flattenedMapToTree(values)
+	if err != nil {
+		return false, err
 	}
 
-	return s.set(version, path, root), nil
+	return s.set(version, path, valueTree), nil
 }
 
 // Watch registers a new change watcher that gets notified whenever the configuration
@@ -285,10 +278,30 @@ func (s *Store) Watch(path string) (<-chan map[string]string, UnsubscribeFunc) {
 	}
 
 	s.nextWatcherID++
+	numProviders := 0
+	if s.providers != nil {
+		numProviders = len(s.providers)
+	}
+
 	watcher := changeWatcher{
-		id:         s.nextWatcherID,
-		changeChan: make(chan map[string]string, 1),
-		doneChan:   make(chan struct{}, 0),
+		id:                    s.nextWatcherID,
+		changeChan:            make(chan map[string]string, 1),
+		providerUnsubscribeFn: make([]func(), numProviders),
+	}
+
+	// For each registered value provider fetch its value for the path and
+	// apply it to the store; then register a watch for the same path
+	if numProviders > 0 {
+		for index, provider := range s.providers {
+			values := provider.instance.Get(path)
+			if values != nil && len(values) != 0 {
+				valueTree, err := flattenedMapToTree(values)
+				if err == nil {
+					s.set(index, path, valueTree)
+				}
+			}
+			watcher.providerUnsubscribeFn[index] = provider.instance.Watch(path, provider.valueSetFunc)
+		}
 	}
 
 	// Lookup current value at path and push it to the watcher's buffered event chan
@@ -315,11 +328,14 @@ func (s *Store) unwatch(path string, watcherID int) UnsubscribeFunc {
 				continue
 			}
 
-			// Found watcher. Close doneChan to unblock any go-routines
-			// that are trying to write to its event chan and clean up
-			close(watcher.doneChan)
+			// Unsubscribe provider watchers
+			for _, unsubFn := range watcher.providerUnsubscribeFn {
+				unsubFn()
+			}
+
 			close(watcher.changeChan)
 			s.watchers[path] = append(s.watchers[path][0:index], s.watchers[path][index+1:]...)
+
 			return
 		}
 	}
@@ -352,24 +368,12 @@ func (s *Store) notifyWatchers(n *node) {
 			}
 		}
 
-		// Spawn go-routines to fanout notifications to registered watchers
-		go func(watcher changeWatcher, valueMap map[string]string) {
-			if afterUpdateHookFn != nil {
-				defer afterUpdateHookFn()
-			}
-			if beforeUpdateHookFn != nil {
-				beforeUpdateHookFn()
-			}
-
-			select {
-			case <-watcher.doneChan:
-				// event chan is closed; bail out
-			case watcher.changeChan <- valueMap:
-				// queued update
-			default:
-				// event chan is full; drop update
-			}
-		}(watcher, valueMapCopy)
+		select {
+		case watcher.changeChan <- valueMapCopy:
+			// queued update
+		default:
+			// event chan is full; drop update
+		}
 	}
 }
 
@@ -433,4 +437,52 @@ nextSegment:
 	}
 
 	return curNode
+}
+
+// FlattenedMapToTree converts a map from flat key format to a nested tree format.
+// Given an input like:
+//  {"segment1/segment2.../segment_n": value}
+//
+// it returns:
+//  {"segment1": {
+//    "segment2": { ...
+//      {"segment_n": value}
+//    }
+//  }
+func flattenedMapToTree(values map[string]string) (map[string]interface{}, error) {
+	root := make(map[string]interface{}, 0)
+	var segmentMap *map[string]interface{}
+	for path, v := range values {
+		if len(path) == 0 {
+			return nil, fmt.Errorf("supplied value map contains empty path key")
+		}
+		segments := splitRegex.Split(path, -1)
+		lastSegmentIndex := len(segments) - 1
+
+		segmentMap = &root
+		for index, segment := range segments {
+			if len(segment) == 0 {
+				return nil, fmt.Errorf("supplied value map contains empty segment for path %q", path)
+			}
+
+			subPath := (*segmentMap)[segment]
+			subPathAsMap, isMap := subPath.(map[string]interface{})
+			if subPath != nil && ((index == lastSegmentIndex && isMap) || (index != lastSegmentIndex && !isMap)) {
+				return nil, fmt.Errorf("supplied value map contains both a value and a sub-path for %q", strings.Join(segments[:index+1], pathDelimiter))
+			}
+
+			switch {
+			case index == lastSegmentIndex:
+				(*segmentMap)[segment] = v
+			case subPathAsMap != nil:
+				segmentMap = &subPathAsMap
+			default:
+				subPathAsMap = make(map[string]interface{})
+				(*segmentMap)[segment] = subPathAsMap
+				segmentMap = &subPathAsMap
+			}
+		}
+	}
+
+	return root, nil
 }
