@@ -127,7 +127,10 @@ func (s *Store) RegisterValueProvider(provider ValueProvider) {
 	s.providers = append(s.providers, &valueProvider{
 		instance: provider,
 		valueSetFunc: func(path string, values map[string]string) {
-			s.SetKeys(priority, path, values)
+			// Use a go-routine to set the keys to avoid a deadlock if
+			// the provider decides to call the value setter while inside
+			// the Watch() method.
+			go s.SetKeys(priority, path, values)
 		},
 	})
 }
