@@ -1,3 +1,8 @@
+// Package config exposes a global configuration store instance and provides
+// helpers for setting default configuration values.
+//
+// Including this package will automatically register the built-in configuration
+// providers. For more information please see the provider sub-package.
 package config
 
 import (
@@ -5,11 +10,10 @@ import (
 	"github.com/achilleasa/usrv/config/store"
 )
 
-var (
-	// Store is a global configuration store instance that is used to configure
-	// the various usrv components.
-	Store store.Store
-)
+// Store is a global configuration store instance that is used to configure
+// the various usrv components. Including the config package automatically
+// registers the built-in configuration providers with this store.
+var Store store.Store
 
 // SetDefaults updates the global store instance with the default values for a
 // particular configuration path.
