@@ -134,8 +134,16 @@ func (n *node) merge(version int, value interface{}, changeCallback changeCallba
 			return false
 		}
 
+		// Update the version
+		n.version = version
+
+		// If the value is equal to the one currently stored, then skip the update
+		if n.value == mergeValue {
+			return false
+		}
+
 		// Update the value and clear any existing child nodes
-		n.value, n.version = mergeValue, version
+		n.value = mergeValue
 		if len(n.paths) != 0 {
 			n.paths = make(map[string]*node, 0)
 		}
