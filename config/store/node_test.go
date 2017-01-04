@@ -211,14 +211,13 @@ func TestNodeMerge(t *testing.T) {
 			expModified: false,
 		},
 		{
-			cfg:     `{"key1":{"key2":"2","key3":{"key4":"4","key5":"5"}}}`,
+			cfg:     `{"key1":{"key2":"2","key3":{}}}`,
 			version: 10,
 			expValues: map[string]string{
-				"key1/key2":      "2",
-				"key1/key3/key4": "4",
-				"key1/key3/key5": "5",
+				"key1/key2": "2",
+				"key1/key3": "overwrite!",
 			},
-			expModified: true,
+			expModified: false,
 		},
 	}
 	var cfg map[string]interface{}

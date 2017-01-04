@@ -85,7 +85,7 @@ type valueProvider struct {
 //   }
 //  }
 type Store struct {
-	mutex         sync.Mutex
+	rwMutex       sync.RWMutex
 	root          *node
 	nextWatcherID int
 	watchers      map[string][]changeWatcher
@@ -94,8 +94,8 @@ type Store struct {
 
 // Reset deletes the store's contents and removes any associated change watchers.
 func (s *Store) Reset() {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.rwMutex.Lock()
+	defer s.rwMutex.Unlock()
 
 	if s.watchers != nil {
 		for _, pathWatchers := range s.watchers {
@@ -116,8 +116,8 @@ func (s *Store) Reset() {
 // priority for the configuration values emitted by each provider. Providers
 // should be registered in low to high priority order.
 func (s *Store) RegisterValueProvider(provider ValueProvider) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.rwMutex.Lock()
+	defer s.rwMutex.Unlock()
 
 	if s.providers == nil {
 		s.providers = make([]*valueProvider, 0)
@@ -170,8 +170,8 @@ func (s *Store) RegisterValueProvider(provider ValueProvider) {
 //   "key4": "4"
 //  }
 func (s *Store) Get(path string) map[string]string {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.rwMutex.RLock()
+	defer s.rwMutex.RUnlock()
 
 	return s.get(path)
 }
@@ -189,8 +189,8 @@ func (s *Store) Get(path string) map[string]string {
 // a version mismatch occured then SetKey will return false to indicate that no.
 // update took place.
 func (s *Store) SetKey(version int, path, value string) (storeUpdated bool, err error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.rwMutex.Lock()
+	defer s.rwMutex.Unlock()
 
 	return s.set(version, path, value), nil
 }
@@ -237,13 +237,13 @@ func (s *Store) SetKeys(version int, path string, values map[string]string) (sto
 		return false, nil
 	}
 
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	valueTree, err := flattenedMapToTree(values)
 	if err != nil {
 		return false, err
 	}
+
+	s.rwMutex.Lock()
+	defer s.rwMutex.Unlock()
 
 	return s.set(version, path, valueTree), nil
 }
@@ -269,8 +269,8 @@ func (s *Store) Watch(path string) (<-chan map[string]string, UnsubscribeFunc) {
 	// Normalize path
 	path = pathDelimiter + strings.Trim(path, pathDelimiter)
 
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.rwMutex.Lock()
+	defer s.rwMutex.Unlock()
 
 	if s.watchers == nil {
 		s.watchers = make(map[string][]changeWatcher, 0)
@@ -317,8 +317,8 @@ func (s *Store) Watch(path string) (<-chan map[string]string, UnsubscribeFunc) {
 // Unwatch generates a function that deletes a watcher by its assigned ID.
 func (s *Store) unwatch(path string, watcherID int) UnsubscribeFunc {
 	return func() {
-		s.mutex.Lock()
-		defer s.mutex.Unlock()
+		s.rwMutex.Lock()
+		defer s.rwMutex.Unlock()
 
 		// No watchers defined
 		if s.watchers == nil || s.watchers[path] == nil {
@@ -381,7 +381,7 @@ func (s *Store) notifyWatchers(n *node) {
 }
 
 // Get looks up the sub-tree rooted at path and returnes the leaf values
-// as a map. This function must only be called after locking the store's mutex.
+// as a map. This function must only be called after locking the store's read mutex.
 func (s *Store) get(path string) map[string]string {
 	root := s.lookup(path, false)
 	if root == nil {
@@ -393,7 +393,7 @@ func (s *Store) get(path string) map[string]string {
 
 // Set attempts to merge the given string or map value against the sub-tree
 // rooted at path. This function must only be called after locking the store's
-// mutex.
+// write mutex.
 func (s *Store) set(version int, path string, value interface{}) bool {
 	root := s.lookup(path, true)
 	return root.merge(version, value, s.notifyWatchers)
