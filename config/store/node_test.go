@@ -231,7 +231,7 @@ func TestNodeMerge(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		modified := root.merge(spec.version, cfg, nil)
+		modified := root.merge(spec.version, cfg)
 		if modified != spec.expModified {
 			t.Errorf("[spec %d] expected root.merge to return %t; got %t", specIndex, spec.expModified, modified)
 		}
@@ -240,24 +240,6 @@ func TestNodeMerge(t *testing.T) {
 		if !reflect.DeepEqual(values, spec.expValues) {
 			t.Errorf("[spec %d] expected merged tree values to be:\n%v\n\ngot:\n%v", specIndex, spec.expValues, values)
 		}
-	}
-}
-
-func TestNodeMergeCallback(t *testing.T) {
-	var cfg map[string]interface{}
-	err := json.Unmarshal([]byte(`{"key1":{"key2":"2","key3":{"key4":"4"}}}`), &cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := makeNode("", 0, nil)
-
-	changeFnCallCount := 0
-	root.merge(1, cfg, func(_ *node) { changeFnCallCount++ })
-
-	// We expect 1 call for each key + 1 call for the store root node
-	expCount := 5
-	if changeFnCallCount != expCount {
-		t.Fatalf("expected change callback to be invoked %d times; got %d", expCount, changeFnCallCount)
 	}
 }
 
@@ -281,5 +263,5 @@ func TestNodeMergePanic(t *testing.T) {
 		"key1": map[string]interface{}{
 			"key2": 1,
 		},
-	}, nil)
+	})
 }

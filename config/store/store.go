@@ -16,14 +16,32 @@ var (
 // After the first call, subsequent calls to UnsubscribeFunc have no effect.
 type UnsubscribeFunc func()
 
+// ChangeHandlerFunc is invoked by the store to handle changes to a watched path.
+// It receives as arguments the updated data for the path and its current version.
+//
+// The handler can safely invoke all store methods but should never block; if
+// it blocks then a deadlock will occur.
+type ChangeHandlerFunc func(values map[string]string, version int)
+
 type changeWatcher struct {
 	id int
 
-	// A channel where configuration changes are published.
-	changeChan chan map[string]string
+	// A callback for processing changes.
+	changeHandler ChangeHandlerFunc
 
-	// A set of unsubscribe functions for each registered value provider.
+	// A list of unsubscribe functions for terminating watches set on value providers.
 	providerUnsubscribeFn []func()
+}
+
+type pendingNotification struct {
+	// The version of the data
+	version int
+
+	// An immutable copy of the tree values to be passed to the handlers.
+	values map[string]string
+
+	// A list of handlers to notify.
+	changeHandlers []ChangeHandlerFunc
 }
 
 type valueProvider struct {
@@ -84,11 +102,27 @@ type valueProvider struct {
 //     "key4": "4"
 //   }
 //  }
+//
+// The store access semantics are multiple readers / single writer; calls to
+// Get() are processed concurrently while all other store operations use a
+// write lock to ensure data integrity.
+//
+// Applications that are interested in changes to a particular store path can
+// register a watcher for that path. Watchers are guaranteed to be always executed
+// in DFS order based on their path; however no guarantee is provided for the
+// order in which watchers on the same path segment are executed. Given the
+// following set of watchers:
+//
+//  - "/foo" -> watcher1
+//  - "/foo/bar" -> [watcher2, watcher3]
+//
+// when the path "/foo/bar" changes, the store will invoke watcher2 and watcher3
+// first (in random order) and only after they both return will watcher1 be invoked.
 type Store struct {
 	rwMutex       sync.RWMutex
 	root          *node
 	nextWatcherID int
-	watchers      map[string][]changeWatcher
+	watchers      map[string][]*changeWatcher
 	providers     []*valueProvider
 }
 
@@ -100,10 +134,9 @@ func (s *Store) Reset() {
 	if s.watchers != nil {
 		for _, pathWatchers := range s.watchers {
 			for _, watcher := range pathWatchers {
-				for _, providerUnsubFn := range watcher.providerUnsubscribeFn {
-					providerUnsubFn()
+				for _, unsubFn := range watcher.providerUnsubscribeFn {
+					unsubFn()
 				}
-				watcher.providerUnsubscribeFn = nil
 			}
 		}
 	}
@@ -173,7 +206,12 @@ func (s *Store) Get(path string) map[string]string {
 	s.rwMutex.RLock()
 	defer s.rwMutex.RUnlock()
 
-	return s.get(path)
+	root := s.lookup(path, false)
+	if root == nil {
+		return make(map[string]string, 0)
+	}
+
+	return root.leafValues("", true)
 }
 
 // SetKey sets the node at the given path to the given value if version is
@@ -189,10 +227,7 @@ func (s *Store) Get(path string) map[string]string {
 // a version mismatch occured then SetKey will return false to indicate that no.
 // update took place.
 func (s *Store) SetKey(version int, path, value string) (storeUpdated bool, err error) {
-	s.rwMutex.Lock()
-	defer s.rwMutex.Unlock()
-
-	return s.set(version, path, value), nil
+	return s.setAndNotify(version, path, value), nil
 }
 
 // SetKeys applies a set of values whose keys are defined relative to the
@@ -242,20 +277,12 @@ func (s *Store) SetKeys(version int, path string, values map[string]string) (sto
 		return false, err
 	}
 
-	s.rwMutex.Lock()
-	defer s.rwMutex.Unlock()
-
-	return s.set(version, path, valueTree), nil
+	return s.setAndNotify(version, path, valueTree), err
 }
 
 // Watch registers a new change watcher that gets notified whenever the configuration
-// tree rooted at path is modified. This method returns back a read-only channel
-// for receiving the updated configuration (equivalent to invoking Get(path)) as
-// well as a function for deleting the watcher.
-//
-// Before returning, Watch will query the store for the current configuration
-// and push that into the returned notification channel. The notification channel
-// itself is buffered ensuring that calls to Watch do not block.
+// tree rooted at path is modified. The method returns an UnsubscribeFunc that
+// must be invoked to cancel the watcher.
 //
 // It is possible to attach a watcher to a path that does not yet exist in the
 // store. In that case, the returned notification channel will receive an empty
@@ -265,38 +292,40 @@ func (s *Store) SetKeys(version int, path string, values map[string]string) (sto
 // This is by design; passing the same map by value would create different
 // map instances that reused the same storage. Creating map copies ensures that
 // watchers cannot mutate the values that other watchers receive.
-func (s *Store) Watch(path string) (<-chan map[string]string, UnsubscribeFunc) {
+func (s *Store) Watch(path string, changeHandler ChangeHandlerFunc) UnsubscribeFunc {
 	// Normalize path
 	path = pathDelimiter + strings.Trim(path, pathDelimiter)
 
 	s.rwMutex.Lock()
-	defer s.rwMutex.Unlock()
-
-	if s.watchers == nil {
-		s.watchers = make(map[string][]changeWatcher, 0)
-	}
-
-	if s.watchers[path] == nil {
-		s.watchers[path] = make([]changeWatcher, 0)
-	}
 
 	s.nextWatcherID++
 	numProviders := 0
+
 	if s.providers != nil {
 		numProviders = len(s.providers)
 	}
+	if s.watchers == nil {
+		s.watchers = make(map[string][]*changeWatcher, 0)
+	}
 
-	watcher := changeWatcher{
+	if s.watchers[path] == nil {
+		s.watchers[path] = make([]*changeWatcher, 0)
+	}
+
+	watcher := &changeWatcher{
 		id:                    s.nextWatcherID,
-		changeChan:            make(chan map[string]string, 1),
+		changeHandler:         changeHandler,
 		providerUnsubscribeFn: make([]func(), numProviders),
 	}
+	s.watchers[path] = append(s.watchers[path], watcher)
 
 	// For each registered value provider fetch its value for the path and
 	// apply it to the store; then register a watch for the same path. Provider
 	// values are applied in high to low priority order. This ensures the
 	// minimum number of nodes flagged as modified.
 	treeModified := false
+	modFlag := false
+	var pathRoot *node
 	if numProviders > 0 {
 		for index := len(s.providers) - 1; index >= 0; index-- {
 			provider := s.providers[index]
@@ -304,103 +333,183 @@ func (s *Store) Watch(path string) (<-chan map[string]string, UnsubscribeFunc) {
 			if values != nil && len(values) != 0 {
 				valueTree, err := flattenedMapToTree(values)
 				if err == nil {
-					treeModified = s.set(index, path, valueTree) || treeModified
+					modFlag, pathRoot = s.set(index, path, valueTree)
+					treeModified = treeModified || modFlag
 				}
 			}
 			watcher.providerUnsubscribeFn[index] = provider.instance.Watch(path, provider.valueSetFunc)
 		}
 	}
 
-	// Lookup current value at path and push it to the watcher's buffered event chan
-	watcher.changeChan <- s.get(path)
-	s.watchers[path] = append(s.watchers[path], watcher)
+	// If the tree was modified by the provider values, collect the handlers to be notified
+	var pendingNotifications []*pendingNotification
+	if treeModified {
+		pendingNotifications = s.pendingNotifications(pathRoot)
+	}
 
-	return watcher.changeChan, s.unwatch(path, watcher.id)
+	// Generate unsubscribe func
+	unsubFn := s.unwatch(path, watcher.id)
+
+	// Release write lock
+	s.rwMutex.Unlock()
+
+	// Since our pending notifications include an immutable copy of our
+	// data and the affected change handlers, we can fanout the notifications
+	// without requiring any lock.
+	if pendingNotifications != nil {
+		go s.notifyWatchers(pendingNotifications)
+	}
+
+	return unsubFn
 }
 
-// Unwatch generates a function that deletes a watcher by its assigned ID.
+// Unwatch generates a function that deletes a watcher by its assigned ID. The
+// generated function uses sync.Once to ensure that the unsubscriber can only
+// be invoked one time and that further invocations are a no-op.
 func (s *Store) unwatch(path string, watcherID int) UnsubscribeFunc {
+	// Ensure that the generated unsubscribe func can only be invoked only once
+	var once sync.Once
 	return func() {
-		s.rwMutex.Lock()
-		defer s.rwMutex.Unlock()
+		once.Do(func() {
+			s.rwMutex.Lock()
+			defer s.rwMutex.Unlock()
 
-		// No watchers defined
-		if s.watchers == nil || s.watchers[path] == nil {
-			return
-		}
-
-		// Match watcher by ID
-		for index, watcher := range s.watchers[path] {
-			if watcher.id != watcherID {
-				continue
+			// No watchers defined
+			if s.watchers == nil || s.watchers[path] == nil {
+				return
 			}
 
-			// Unsubscribe provider watchers
-			for _, unsubFn := range watcher.providerUnsubscribeFn {
-				unsubFn()
+			// Match watcher by ID
+			for index, watcher := range s.watchers[path] {
+				if watcher.id != watcherID {
+					continue
+				}
+
+				// Unsubscribe provider watchers
+				for _, unsubFn := range watcher.providerUnsubscribeFn {
+					unsubFn()
+				}
+
+				s.watchers[path] = append(s.watchers[path][0:index], s.watchers[path][index+1:]...)
+				return
 			}
-
-			close(watcher.changeChan)
-			s.watchers[path] = append(s.watchers[path][0:index], s.watchers[path][index+1:]...)
-
-			return
-		}
+		})
 	}
 }
 
-// NotifyWatchers implements a node change callback passed that is responsible
-// for notifying the appropriate watchers when a node's value changes. The
-// actual notification delivery is facilitated using a separate go-routine
-// per watcher.
-func (s *Store) notifyWatchers(n *node) {
-	if s.watchers == nil {
-		return
-	}
+// NotifyWatchers iterates a list of pending notifications and invokes the
+// associated change handlers. For each pending notification, this method
+// will spawn a go-routine for each one of its handlers and wait for them
+// to return before processing the next pending notification entry.
+func (s *Store) notifyWatchers(list []*pendingNotification) {
+	var wg sync.WaitGroup
 
-	path := n.path()
-	if s.watchers[path] == nil {
-		return
-	}
+	for _, notification := range list {
+		wg.Add(len(notification.changeHandlers))
 
-	// Pass a copy of the leaf values to each watcher. This ensures that no
-	// watcher can modify the values that others watchers receive.
-	valueMap := n.leafValues("", true)
-	valueMapCopy := valueMap
-	for index, watcher := range s.watchers[path] {
-		// Use the original value for the first watcher and a deep-copy for each other watcher
-		if index != 0 {
-			valueMapCopy = make(map[string]string, len(valueMap))
-			for k, v := range valueMap {
-				valueMapCopy[k] = v
+		valueMapCopy := notification.values
+		for index, watcher := range notification.changeHandlers {
+			// Use the original value for the first watcher and a deep-copy for each other watcher
+			if index != 0 {
+				valueMapCopy = make(map[string]string, len(notification.values))
+				for k, v := range notification.values {
+					valueMapCopy[k] = v
+				}
 			}
+
+			go func(version int, val map[string]string, w ChangeHandlerFunc) {
+				w(val, version)
+				wg.Done()
+			}(notification.version, valueMapCopy, watcher)
 		}
 
-		select {
-		case watcher.changeChan <- valueMapCopy:
-			// queued update
-		default:
-			// event chan is full; drop update
-		}
+		// Wait for all watchers to return
+		wg.Wait()
 	}
 }
 
-// Get looks up the sub-tree rooted at path and returnes the leaf values
-// as a map. This function must only be called after locking the store's read mutex.
-func (s *Store) get(path string) map[string]string {
-	root := s.lookup(path, false)
-	if root == nil {
-		return make(map[string]string, 0)
+// SetAndNotify attempts to merge the given value against the sub-tree rooted
+// at path and invoke any registered change watchers.
+//
+// The method uses a write lock to apply the values and collect the list of
+// change watchers to notify as well as an immutable copy of the tree data that
+// needs to be passed to each watcher. The watchers are invoked using a
+// go-routine and do not require any locks to be held.
+func (s *Store) setAndNotify(version int, path string, values interface{}) bool {
+	s.rwMutex.Lock()
+	treeModified, pathRoot := s.set(version, path, values)
+
+	// If the tree was modified by the provider values, collect the handlers to be notified
+	var pendingNotifications []*pendingNotification
+	if treeModified {
+		pendingNotifications = s.pendingNotifications(pathRoot)
 	}
 
-	return root.leafValues("", true)
+	// Release write lock
+	s.rwMutex.Unlock()
+
+	// Since our pending notifications include an immutable copy of our
+	// data and the affected change handlers, we can fanout the notifications
+	// without requiring any lock.
+	if pendingNotifications != nil {
+		go s.notifyWatchers(pendingNotifications)
+	}
+
+	return treeModified
 }
 
 // Set attempts to merge the given string or map value against the sub-tree
 // rooted at path. This function must only be called after locking the store's
 // write mutex.
-func (s *Store) set(version int, path string, value interface{}) bool {
+//
+// It returns a bool flag to indicate whether the path was modified and the
+// root node corresponding to path.
+func (s *Store) set(version int, path string, value interface{}) (bool, *node) {
 	root := s.lookup(path, true)
-	return root.merge(version, value, s.notifyWatchers)
+	return root.merge(version, value), root
+}
+
+// PendingNotifications first performs a DFS on a modified root to generate a list
+// of watchers (in DFS order) that need to be notified due to a node value change.
+// The list is augmented by visiting all ancestor nodes of root and including
+// any watchers attached to them.
+//
+// If no watchers are defined for the affected nodes, this method returns nil.
+//
+// This method must only be called after locking the store's write mutex.
+func (s *Store) pendingNotifications(root *node) []*pendingNotification {
+	if s.watchers == nil {
+		return nil
+	}
+
+	var pendingNotifications []*pendingNotification
+	var visitor = func(n *node) {
+		path := n.path()
+		if s.watchers[path] == nil || len(s.watchers[path]) == 0 {
+			return
+		}
+
+		if pendingNotifications == nil {
+			pendingNotifications = make([]*pendingNotification, 0)
+		}
+
+		fnList := make([]ChangeHandlerFunc, len(s.watchers[path]))
+		for index, watcher := range s.watchers[path] {
+			fnList[index] = watcher.changeHandler
+		}
+
+		pendingNotifications = append(pendingNotifications, &pendingNotification{
+			version:        n.version,
+			values:         n.leafValues("", true),
+			changeHandlers: fnList,
+		})
+	}
+
+	// Collect pending notifications for the sub-tree from root and then
+	// append notifications for root's ancestors.
+	root.visitModifiedNodes(visitor)
+	root.visitAncestors(visitor)
+	return pendingNotifications
 }
 
 // Lookup searches the configuration tree for a particular path and returns
@@ -418,6 +527,9 @@ func (s *Store) lookup(path string, createMissingNodes bool) *node {
 	path = strings.Trim(path, pathDelimiter)
 
 	if s.root == nil {
+		if !createMissingNodes {
+			return nil
+		}
 		s.root = makeNode("", 0, nil)
 	}
 
