@@ -5,19 +5,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/achilleasa/usrv/config"
+	"github.com/achilleasa/usrv/config/store"
 )
 
 func TestMapFlagDynamicUpdate(t *testing.T) {
-	defer config.Store.Reset()
+	var s store.Store
 
 	expValue := map[string]string{
+		"foo":       "bar",
 		"key1":      "value1",
 		"key2/key3": "value2",
 	}
-	config.Store.SetKeys(1, "map-flag", expValue)
+	s.SetKeys(1, "map-flag", map[string]string{"foo": "bar"})
 
-	f := NewMap("map-flag")
+	f := NewMap(&s, "map-flag")
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		s.SetKeys(1, "map-flag", expValue)
+	}()
 	select {
 	case <-f.ChangeChan():
 	case <-time.After(1000 * time.Millisecond):
@@ -31,11 +36,14 @@ func TestMapFlagDynamicUpdate(t *testing.T) {
 }
 
 func TestMapFlagManualSet(t *testing.T) {
-	f := NewMap("")
+	f := NewMap(nil, "")
 	expValue := map[string]string{
 		"key1":      "value1",
 		"key2/key3": "value2",
 	}
+	f.Set(expValue)
+
+	// Second attempt to set should bail out as the value has not changed
 	f.Set(expValue)
 
 	val := f.Get()

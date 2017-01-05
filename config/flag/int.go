@@ -1,6 +1,10 @@
 package flag
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/achilleasa/usrv/config/store"
+)
 
 // Uint32Flag provides a thread-safe flag wrapping an int32 value. Its value can be
 // dynamically updated via a watched configuration key or manually set using its
@@ -12,13 +16,16 @@ type Uint32Flag struct {
 }
 
 // NewUint32 creates a uint32 flag. If a non-empty config path is specified, the flag
-// will register a watcher to the global configuration store and automatically
-// update its value.
+// will register a watcher to the supplied configuration store instance and
+// automatically update its value.
+//
+// Passing a nil store instance and a non-empty cfgPath will cause this function
+// to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewUint32(cfgPath string) *Uint32Flag {
+func NewUint32(store *store.Store, cfgPath string) *Uint32Flag {
 	f := &Uint32Flag{}
-	f.init(f.mapCfgValue, cfgPath)
+	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
@@ -31,7 +38,7 @@ func (f *Uint32Flag) Get() uint32 {
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
 func (f *Uint32Flag) Set(val uint32) {
-	f.set(val)
+	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.
@@ -53,13 +60,16 @@ type Int32Flag struct {
 }
 
 // NewInt32 creates a int32 flag. If a non-empty config path is specified, the flag
-// will register a watcher to the global configuration store and automatically
-// update its value.
+// will register a watcher to the supplied configuration store instance and
+// automatically update its value.
+//
+// Passing a nil store instance and a non-empty cfgPath will cause this function
+// to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewInt32(cfgPath string) *Int32Flag {
+func NewInt32(store *store.Store, cfgPath string) *Int32Flag {
 	f := &Int32Flag{}
-	f.init(f.mapCfgValue, cfgPath)
+	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
@@ -72,7 +82,7 @@ func (f *Int32Flag) Get() int32 {
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
 func (f *Int32Flag) Set(val int32) {
-	f.set(val)
+	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.
@@ -94,13 +104,16 @@ type Int64Flag struct {
 }
 
 // NewInt64 creates a int64 flag. If a non-empty config path is specified, the flag
-// will register a watcher to the global configuration store and automatically
-// update its value.
+// will register a watcher to the supplied configuration store instance and
+// automatically update its value.
+//
+// Passing a nil store instance and a non-empty cfgPath will cause this function
+// to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewInt64(cfgPath string) *Int64Flag {
+func NewInt64(store *store.Store, cfgPath string) *Int64Flag {
 	f := &Int64Flag{}
-	f.init(f.mapCfgValue, cfgPath)
+	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
@@ -113,7 +126,7 @@ func (f *Int64Flag) Get() int64 {
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
 func (f *Int64Flag) Set(val int64) {
-	f.set(val)
+	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.
@@ -131,13 +144,16 @@ type Uint64Flag struct {
 }
 
 // NewUint64 creates a uint64 flag. If a non-empty config path is specified, the flag
-// will register a watcher to the global configuration store and automatically
-// update its value.
+// will register a watcher to the supplied configuration store instance and
+// automatically update its value.
+//
+// Passing a nil store instance and a non-empty cfgPath will cause this function
+// to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewUint64(cfgPath string) *Uint64Flag {
+func NewUint64(store *store.Store, cfgPath string) *Uint64Flag {
 	f := &Uint64Flag{}
-	f.init(f.mapCfgValue, cfgPath)
+	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
@@ -150,7 +166,7 @@ func (f *Uint64Flag) Get() uint64 {
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
 func (f *Uint64Flag) Set(val uint64) {
-	f.set(val)
+	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.

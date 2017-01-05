@@ -1,5 +1,7 @@
 package flag
 
+import "github.com/achilleasa/usrv/config/store"
+
 // StringFlag provides a thread-safe flag wrapping an string value. Its value can be
 // dynamically updated via a watched configuration key or manually set using its
 // Set method.
@@ -10,13 +12,16 @@ type StringFlag struct {
 }
 
 // NewString creates a string flag. If a non-empty config path is specified, the flag
-// will register a watcher to the global configuration store and automatically
-// update its value.
+// will register a watcher to the supplied configuration store instance and
+// automatically update its value.
+//
+// Passing a nil store instance and a non-empty cfgPath will cause this function
+// to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewString(cfgPath string) *StringFlag {
+func NewString(store *store.Store, cfgPath string) *StringFlag {
 	f := &StringFlag{}
-	f.init(f.mapCfgValue, cfgPath)
+	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
@@ -29,7 +34,7 @@ func (f *StringFlag) Get() string {
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
 func (f *StringFlag) Set(val string) {
-	f.set(val)
+	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.

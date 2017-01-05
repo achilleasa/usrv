@@ -4,14 +4,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/achilleasa/usrv/config"
+	"github.com/achilleasa/usrv/config/store"
 )
 
 func TestUint32FlagUpdate(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "uint32-flag", "123")
+	var s store.Store
+	s.SetKey(1, "uint32-flag", "0")
 
-	f := NewUint32("uint32-flag")
+	f := NewUint32(&s, "uint32-flag")
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		s.SetKey(1, "uint32-flag", "123")
+	}()
 	select {
 	case <-f.ChangeChan():
 	case <-time.After(1000 * time.Millisecond):
@@ -33,10 +37,10 @@ func TestUint32FlagUpdate(t *testing.T) {
 }
 
 func TestUint32FlagUpdateWithInvalidValue(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "uint32-flag-invalid", "invalid")
+	var s store.Store
+	s.SetKey(1, "uint32-flag-invalid", "invalid")
 
-	f := NewUint32("uint32-flag-invalid")
+	f := NewUint32(&s, "uint32-flag-invalid")
 	select {
 	case <-f.ChangeChan():
 		t.Fatal("unexpected configuration change event")
@@ -45,10 +49,14 @@ func TestUint32FlagUpdateWithInvalidValue(t *testing.T) {
 }
 
 func TestInt32FlagUpdate(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "int32-flag", "-123")
+	var s store.Store
+	s.SetKey(1, "int32-flag", "0")
 
-	f := NewInt32("int32-flag")
+	f := NewInt32(&s, "int32-flag")
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		s.SetKey(1, "int32-flag", "-123")
+	}()
 	select {
 	case <-f.ChangeChan():
 	case <-time.After(1000 * time.Millisecond):
@@ -70,10 +78,10 @@ func TestInt32FlagUpdate(t *testing.T) {
 }
 
 func TestInt32FlagUpdateWithInvalidValue(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "int32-flag-invalid", "-foo")
+	var s store.Store
+	s.SetKey(1, "int32-flag-invalid", "-foo")
 
-	f := NewInt32("int32-flag-invalid")
+	f := NewInt32(&s, "int32-flag-invalid")
 	select {
 	case <-f.ChangeChan():
 		t.Fatal("unexpected configuration change event")
@@ -82,10 +90,14 @@ func TestInt32FlagUpdateWithInvalidValue(t *testing.T) {
 }
 
 func TestUint64FlagUpdate(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "uint64-flag", "1234567890")
+	var s store.Store
+	s.SetKey(1, "uint64-flag", "0")
 
-	f := NewUint64("uint64-flag")
+	f := NewUint64(&s, "uint64-flag")
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		s.SetKey(1, "uint64-flag", "1234567890")
+	}()
 	select {
 	case <-f.ChangeChan():
 	case <-time.After(1000 * time.Millisecond):
@@ -107,10 +119,10 @@ func TestUint64FlagUpdate(t *testing.T) {
 }
 
 func TestUint64FlagUpdateWithInvalidValue(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "uint64-flag-invalid", "-foo")
+	var s store.Store
+	s.SetKey(1, "uint64-flag-invalid", "-foo")
 
-	f := NewUint64("uint64-flag-invalid")
+	f := NewUint64(&s, "uint64-flag-invalid")
 	select {
 	case <-f.ChangeChan():
 		t.Fatal("unexpected configuration change event")
@@ -119,10 +131,14 @@ func TestUint64FlagUpdateWithInvalidValue(t *testing.T) {
 }
 
 func TestInt64FlagUpdate(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "int64-flag", "-1234567890")
+	var s store.Store
+	s.SetKey(1, "int64-flag", "0")
 
-	f := NewInt64("int64-flag")
+	f := NewInt64(&s, "int64-flag")
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		s.SetKey(1, "int64-flag", "-1234567890")
+	}()
 	select {
 	case <-f.ChangeChan():
 	case <-time.After(1000 * time.Millisecond):
@@ -144,10 +160,10 @@ func TestInt64FlagUpdate(t *testing.T) {
 }
 
 func TestInt64FlagUpdateWithInvalidValue(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "int64-flag-invalid", "-foo")
+	var s store.Store
+	s.SetKey(1, "int64-flag-invalid", "-foo")
 
-	f := NewInt64("int64-flag-invalid")
+	f := NewInt64(&s, "int64-flag-invalid")
 	select {
 	case <-f.ChangeChan():
 		t.Fatal("unexpected configuration change event")

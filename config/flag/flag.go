@@ -3,18 +3,25 @@
 package flag
 
 import (
-	"sync/atomic"
+	"sync"
 
-	"github.com/achilleasa/usrv/config"
+	"github.com/achilleasa/usrv/config/store"
 )
 
 type flagImpl struct {
-	// The wrapped value.
-	val atomic.Value
+	// A pointer to the store used by this value
+	store *store.Store
 
-	// A value set to 1 when we receive the initial flag value. It is used
-	// as a guard to ensure that we only close hasValueChan once.
-	hasValue uint32
+	// A mutex guarding access to the data
+	rwMutex sync.RWMutex
+
+	// The wrapped value.
+	value interface{}
+
+	// The current version of the flag's value. Initially, it is set to -1
+	// to indicate that the flag contains no value. Once  a value is received,
+	// hasValueChan gets closed to unblock any readers waiting on get()
+	version int
 
 	// A channel that is closed when the initial value for the flag is set.
 	hasValueChan chan struct{}
@@ -22,44 +29,58 @@ type flagImpl struct {
 	// A channel for receiving notifications when the flag value changes.
 	changedChan chan struct{}
 
-	// A channel for signalling the watcher goroutine to shutdown.
-	doneChan chan struct{}
+	// A function for cancelling the watcher for this value.
+	unsubscribeFn store.UnsubscribeFunc
 
 	// A function for mapping incoming config events to a value that can be set.
 	valueMapper cfgEventToValueMapper
+
+	// A function for comparing values for equality.
+	checkEquality func(_, _ interface{}) bool
 }
 
 type cfgEventToValueMapper func(map[string]string) (interface{}, error)
 
-func (f *flagImpl) init(valueMapper cfgEventToValueMapper, cfgPath string) {
+func (f *flagImpl) init(store *store.Store, valueMapper cfgEventToValueMapper, cfgPath string) {
+	f.store = store
 	f.valueMapper = valueMapper
-	f.changedChan = make(chan struct{}, 1)
+	f.changedChan = make(chan struct{}, 0)
 	f.hasValueChan = make(chan struct{}, 0)
+	f.version = -1
+	if f.checkEquality == nil {
+		f.checkEquality = func(v1, v2 interface{}) bool {
+			return v1 == v2
+		}
+	}
 
 	if cfgPath == "" {
 		return
 	}
 
-	f.doneChan = make(chan struct{}, 0)
+	if store == nil {
+		panic("store cannot be nil")
+	}
 
-	go func() {
-		cfgChan, unsubFn := config.Store.Watch(cfgPath)
-		defer unsubFn()
+	// Fetch and set initial value if present in store
+	f.storeValueChanged(f.store.Get(cfgPath))
 
-		for {
-			select {
-			case cfg := <-cfgChan:
-				val, err := f.valueMapper(cfg)
-				if err != nil {
-					continue
-				}
-				f.set(val)
-			case <-f.doneChan:
-				f.doneChan <- struct{}{}
-				return
-			}
-		}
-	}()
+	// Register watch
+	f.unsubscribeFn = f.store.Watch(cfgPath, f.storeValueChanged)
+}
+
+// StoreValueChanged implements a watcher change handler for the flag value.
+func (f *flagImpl) storeValueChanged(values map[string]string, version int) {
+	// No value in store
+	if version == -1 {
+		return
+	}
+
+	mappedVal, err := f.valueMapper(values)
+	if err != nil {
+		return
+	}
+
+	f.set(version, mappedVal, true)
 }
 
 // Get the stored value. If the flag does not have a value yet this method will
@@ -68,19 +89,43 @@ func (f *flagImpl) get() interface{} {
 	// Block until the flag value is set
 	<-f.hasValueChan
 
-	return f.val.Load()
+	f.rwMutex.RLock()
+	val := f.value
+	f.rwMutex.RUnlock()
+
+	return val
 }
 
-// Set the stored value.
-func (f *flagImpl) set(val interface{}) {
-	f.val.Store(val)
+// Set the stored value and notify changeChan.
+//
+// If the compareVersions flag is set and version is less than the currently
+// stored version then this is a no-op. Otherwise, the value is
+// overwritten and changeChan is notified.
+func (f *flagImpl) set(version int, val interface{}, compareVersions bool) {
+	f.rwMutex.Lock()
+	defer f.rwMutex.Unlock()
 
-	// If we received the intial flag value we need to close hasValueChan
-	// to unblock readers waiting on get(). We use a compare and swap operation
-	// to only close the channel once and avoid panics
-	if atomic.CompareAndSwapUint32(&f.hasValue, 0, 1) {
+	if compareVersions && (version == -1 || version < f.version) {
+		return
+	}
+
+	// Unblock any readers waiting on Get()
+	if f.version == -1 {
 		close(f.hasValueChan)
 	}
+
+	// If compareVersions is not true we need to cap version to 0
+	if version < 0 {
+		version = 0
+	}
+	f.version = version
+
+	// We only changed the version but not the value
+	if f.checkEquality(f.value, val) {
+		return
+	}
+
+	f.value = val
 
 	// Notify anyone interested in change events
 	select {
@@ -96,15 +141,9 @@ func (f *flagImpl) ChangeChan() <-chan struct{} {
 
 // CancelDynamicUpdates disables dynamic flag updates from the configuration system.
 func (f *flagImpl) CancelDynamicUpdates() {
-	if f.doneChan == nil {
-		return
+	if f.unsubscribeFn != nil {
+		f.unsubscribeFn()
 	}
-
-	// Signal the watcher and wait for it to exit
-	f.doneChan <- struct{}{}
-	<-f.doneChan
-	close(f.doneChan)
-	f.doneChan = nil
 }
 
 // firstMapElement returns the first element in a map. Due to the way that map
