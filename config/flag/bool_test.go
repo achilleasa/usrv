@@ -4,14 +4,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/achilleasa/usrv/config"
+	"github.com/achilleasa/usrv/config/store"
 )
 
 func TestBoolFlagUpdate(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "bool-flag", "true")
+	var s store.Store
+	s.SetKey(1, "bool-flag", "false")
 
-	f := NewBool("bool-flag")
+	f := NewBool(&s, "bool-flag")
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		s.SetKey(1, "bool-flag", "true")
+	}()
 	select {
 	case <-f.ChangeChan():
 	case <-time.After(1000 * time.Millisecond):
@@ -33,10 +37,10 @@ func TestBoolFlagUpdate(t *testing.T) {
 }
 
 func TestBoolFlagUpdateWithInvalidValue(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "bool-flag-invalid", "non-bool-value")
+	var s store.Store
+	s.SetKey(1, "bool-flag-invalid", "non-bool-value")
 
-	f := NewBool("bool-flag-invalid")
+	f := NewBool(&s, "bool-flag-invalid")
 	select {
 	case <-f.ChangeChan():
 		t.Fatal("unexpected configuration change event")
@@ -57,7 +61,7 @@ func TestBoolFlagValueMapper(t *testing.T) {
 		{"foo", nil, errNotBoolean},
 	}
 
-	f := NewBool("")
+	f := NewBool(nil, "")
 
 	for specIndex, spec := range specs {
 		val, err := f.mapCfgValue(map[string]string{"value": spec.in})

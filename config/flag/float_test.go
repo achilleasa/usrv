@@ -4,14 +4,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/achilleasa/usrv/config"
+	"github.com/achilleasa/usrv/config/store"
 )
 
 func TestFloat32FlagUpdate(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "float32-flag", "123.0")
+	var s store.Store
+	s.SetKey(1, "float32-flag", "0")
 
-	f := NewFloat32("float32-flag")
+	f := NewFloat32(&s, "float32-flag")
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		s.SetKey(1, "float32-flag", "123.0")
+	}()
 	select {
 	case <-f.ChangeChan():
 	case <-time.After(1000 * time.Millisecond):
@@ -33,10 +37,10 @@ func TestFloat32FlagUpdate(t *testing.T) {
 }
 
 func TestFloat32FlagUpdateWithInvalidValue(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "float32-flag-invalid", "invalid")
+	var s store.Store
+	s.SetKey(1, "float32-flag-invalid", "invalid")
 
-	f := NewFloat32("float32-flag-invalid")
+	f := NewFloat32(&s, "float32-flag-invalid")
 	select {
 	case <-f.ChangeChan():
 		t.Fatal("unexpected configuration change event")
@@ -45,10 +49,14 @@ func TestFloat32FlagUpdateWithInvalidValue(t *testing.T) {
 }
 
 func TestFloat64FlagUpdate(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "float64-flag", "1234567890.0")
+	var s store.Store
+	s.SetKey(1, "float64-flag", "0")
 
-	f := NewFloat64("float64-flag")
+	f := NewFloat64(&s, "float64-flag")
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		s.SetKey(1, "float64-flag", "1234567890.0")
+	}()
 	select {
 	case <-f.ChangeChan():
 	case <-time.After(1000 * time.Millisecond):
@@ -70,10 +78,10 @@ func TestFloat64FlagUpdate(t *testing.T) {
 }
 
 func TestFloat64FlagUpdateWithInvalidValue(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "float64-flag-invalid", "invalid")
+	var s store.Store
+	s.SetKey(1, "float64-flag-invalid", "invalid")
 
-	f := NewFloat64("float64-flag-invalid")
+	f := NewFloat64(&s, "float64-flag-invalid")
 	select {
 	case <-f.ChangeChan():
 		t.Fatal("unexpected configuration change event")

@@ -3,6 +3,8 @@ package flag
 import (
 	"errors"
 	"strings"
+
+	"github.com/achilleasa/usrv/config/store"
 )
 
 var (
@@ -22,13 +24,16 @@ type BoolFlag struct {
 }
 
 // NewBool creates a bool flag. If a non-empty config path is specified, the flag
-// will register a watcher to the global configuration store and automatically
-// update its value.
+// will register a watcher to the supplied configuration store instance and
+// automatically update its value.
+//
+// Passing a nil store instance and a non-empty cfgPath will cause this function
+// to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewBool(cfgPath string) *BoolFlag {
+func NewBool(store *store.Store, cfgPath string) *BoolFlag {
 	f := &BoolFlag{}
-	f.init(f.mapCfgValue, cfgPath)
+	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
@@ -41,7 +46,7 @@ func (f *BoolFlag) Get() bool {
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
 func (f *BoolFlag) Set(val bool) {
-	f.set(val)
+	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.

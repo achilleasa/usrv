@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/achilleasa/usrv/config"
+	"github.com/achilleasa/usrv/config/store"
 )
 
 func TestFirstMapElement(t *testing.T) {
@@ -25,12 +25,105 @@ func TestFirstMapElement(t *testing.T) {
 	}
 }
 
+func TestFlagPanicWhenNonEmptyPathAndNilStore(t *testing.T) {
+	defer func() {
+		expErr := "store cannot be nil"
+		if err := recover(); err != nil {
+			if err.(string) != expErr {
+				t.Fatalf("expected error %q; got %v", expErr, err)
+			}
+
+			return
+		}
+
+		t.Fatalf("expected init to panic")
+	}()
+
+	f := &flagImpl{}
+	f.init(nil, stringMapper, "/goo")
+}
+
+func TestFlagVersionComparisonLogic(t *testing.T) {
+	var s store.Store
+	f := &flagImpl{}
+
+	// Init with no value in store
+	f.init(&s, stringMapper, "/foo/bar")
+
+	// Set with a version > 0
+	expVersion := 1
+	expValue := "value"
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		f.set(expVersion, expValue, true)
+
+		if f.version != expVersion {
+			t.Fatalf("expected version to be %d; got %d", expVersion, f.version)
+		}
+		if f.value != expValue {
+			t.Fatalf("expected value to be %s; got %v", expValue, f.value)
+		}
+	}()
+	<-f.changedChan
+
+	// Set with a version less than the one stored should be a no-op
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		f.set(0, "new value", true)
+
+		if f.version != expVersion {
+			t.Fatalf("expected version to be %d; got %d", expVersion, f.version)
+		}
+		if f.value != expValue {
+			t.Fatalf("expected value to be %s; got %v", expValue, f.value)
+		}
+	}()
+	select {
+	case <-f.changedChan:
+		t.Fatalf("expected set not to trigger a change notification")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// Set with greater version but same value should only update the version but not trigger an update
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		f.set(2, expValue, true)
+		expVersion = 2
+
+		if f.version != expVersion {
+			t.Fatalf("expected version to be %d; got %d", expVersion, f.version)
+		}
+	}()
+
+	select {
+	case <-f.changedChan:
+		t.Fatalf("expected set not to trigger a change notification")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// Set with greater version and different valueMapper
+	expValue = "new value"
+	expVersion = 3
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		f.set(expVersion, expValue, true)
+
+		if f.version != expVersion {
+			t.Fatalf("expected version to be %d; got %d", expVersion, f.version)
+		}
+		if f.value != expValue {
+			t.Fatalf("expected value to be %s; got %v", expValue, f.value)
+		}
+	}()
+	<-f.changedChan
+}
+
 func TestFlagBlockOnGet(t *testing.T) {
 	f := &flagImpl{}
-	f.init(stringMapper, "")
+	f.init(nil, stringMapper, "")
 	go func() {
 		<-time.After(300 * time.Millisecond)
-		f.set("hello")
+		f.set(-1, "hello", false)
 	}()
 
 	expValue := "hello"
@@ -43,10 +136,10 @@ func TestFlagBlockOnGet(t *testing.T) {
 
 func TestFlagChangeNotification(t *testing.T) {
 	f := &flagImpl{}
-	f.init(stringMapper, "")
+	f.init(nil, stringMapper, "")
 	go func() {
 		<-time.After(300 * time.Millisecond)
-		f.set("hello")
+		f.set(-1, "hello", false)
 	}()
 
 	select {
@@ -57,17 +150,20 @@ func TestFlagChangeNotification(t *testing.T) {
 
 	// Calling set twice with no notification listeners should
 	// drop the second notification event
-	f.set("hello1")
-	f.set("hello2")
+	f.set(-1, "hello1", false)
+	f.set(-1, "hello2", false)
 }
 
 func TestFlagDynamicChange(t *testing.T) {
-	defer config.Store.Reset()
-	expValue := "hello"
-	config.Store.SetKey(1, "generic-flag-1", expValue)
+	var s store.Store
 
 	f := &flagImpl{}
-	f.init(stringMapper, "generic-flag-1")
+	f.init(&s, stringMapper, "generic-flag-1")
+	expValue := "hello"
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		s.SetKey(1, "generic-flag-1", expValue)
+	}()
 
 	select {
 	case <-f.ChangeChan():
@@ -83,18 +179,21 @@ func TestFlagDynamicChange(t *testing.T) {
 }
 
 func TestFlagCancelDynamicUpdates(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "generic-flag-2", "hello")
+	var s store.Store
+	s.SetKey(1, "generic-flag-2", "hello")
 
 	f := &flagImpl{}
-	f.init(stringMapper, "generic-flag-2")
+	f.init(&s, stringMapper, "generic-flag-2")
 	f.CancelDynamicUpdates()
 
 	// Calling cancel a second time should be a no-op
 	f.CancelDynamicUpdates()
 
 	expValue := "test"
-	f.set(expValue)
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		f.set(10, expValue, true)
+	}()
 
 	select {
 	case <-f.ChangeChan():
@@ -110,11 +209,11 @@ func TestFlagCancelDynamicUpdates(t *testing.T) {
 }
 
 func TestFlagValueMapperError(t *testing.T) {
-	defer config.Store.Reset()
-	config.Store.SetKey(1, "generic-flag-3", "hello")
+	var s store.Store
+	s.SetKey(1, "generic-flag-3", "hello")
 
 	f := &flagImpl{}
-	f.init(func(_ map[string]string) (interface{}, error) { return nil, errors.New("") }, "generic-flag-3")
+	f.init(&s, func(_ map[string]string) (interface{}, error) { return nil, errors.New("") }, "generic-flag-3")
 
 	select {
 	case <-f.ChangeChan():

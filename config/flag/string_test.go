@@ -4,16 +4,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/achilleasa/usrv/config"
+	"github.com/achilleasa/usrv/config/store"
 )
 
 func TestStringFlagDynamicUpdate(t *testing.T) {
-	defer config.Store.Reset()
+	var s store.Store
 
 	expValue := "123"
-	config.Store.SetKey(1, "string-flag", expValue)
+	s.SetKey(1, "string-flag", "original value")
 
-	f := NewString("string-flag")
+	f := NewString(&s, "string-flag")
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		s.SetKey(1, "string-flag", expValue)
+	}()
 	select {
 	case <-f.ChangeChan():
 	case <-time.After(1000 * time.Millisecond):
@@ -27,7 +31,7 @@ func TestStringFlagDynamicUpdate(t *testing.T) {
 }
 
 func TestStringFlagManualSet(t *testing.T) {
-	f := NewString("")
+	f := NewString(nil, "")
 	expValue := "987"
 	f.Set(expValue)
 
