@@ -169,9 +169,10 @@ func (s *Store) RegisterValueProvider(provider ValueProvider) {
 }
 
 // Get retrieves the configuration sub-tree rooted at the given path and returns
-// a map containing the configuration values stored at its leaves. The map keys
-// are the full paths to the leaves relative to the node rooted at the given path.
-// If the given path does not exist, Get will return an empty map.
+// a map containing the configuration values stored at its leaves as well as the
+// version currently stored in that particular path. The map keys are the full paths
+// to the leaves relative to the node rooted at the given path. If the given path does
+// not exist, Get() will return an empty map and -1 for the version.
 //
 // The given path can optionally begin and/or end with the path delimiter "/".
 // This method treats paths "/foo", "foo/" and "/foo/" as equal.
@@ -202,16 +203,16 @@ func (s *Store) RegisterValueProvider(provider ValueProvider) {
 //  {
 //   "key4": "4"
 //  }
-func (s *Store) Get(path string) map[string]string {
+func (s *Store) Get(path string) (map[string]string, int) {
 	s.rwMutex.RLock()
 	defer s.rwMutex.RUnlock()
 
 	root := s.lookup(path, false)
 	if root == nil {
-		return make(map[string]string, 0)
+		return make(map[string]string, 0), -1
 	}
 
-	return root.leafValues("", true)
+	return root.leafValues("", true), root.version
 }
 
 // SetKey sets the node at the given path to the given value if version is
@@ -466,7 +467,19 @@ func (s *Store) setAndNotify(version int, path string, values interface{}) bool 
 // root node corresponding to path.
 func (s *Store) set(version int, path string, value interface{}) (bool, *node) {
 	root := s.lookup(path, true)
-	return root.merge(version, value), root
+	treeModified := root.merge(version, value)
+
+	// Visit all ancestors and ensure that their version is at least equal
+	// to this version.
+	if treeModified {
+		root.visitAncestors(func(n *node) {
+			if n.version < version {
+				n.version = version
+			}
+		})
+	}
+
+	return treeModified, root
 }
 
 // PendingNotifications first performs a DFS on a modified root to generate a list
