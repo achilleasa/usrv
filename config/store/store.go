@@ -293,14 +293,18 @@ func (s *Store) Watch(path string) (<-chan map[string]string, UnsubscribeFunc) {
 	}
 
 	// For each registered value provider fetch its value for the path and
-	// apply it to the store; then register a watch for the same path
+	// apply it to the store; then register a watch for the same path. Provider
+	// values are applied in high to low priority order. This ensures the
+	// minimum number of nodes flagged as modified.
+	treeModified := false
 	if numProviders > 0 {
-		for index, provider := range s.providers {
+		for index := len(s.providers) - 1; index >= 0; index-- {
+			provider := s.providers[index]
 			values := provider.instance.Get(path)
 			if values != nil && len(values) != 0 {
 				valueTree, err := flattenedMapToTree(values)
 				if err == nil {
-					s.set(index, path, valueTree)
+					treeModified = s.set(index, path, valueTree) || treeModified
 				}
 			}
 			watcher.providerUnsubscribeFn[index] = provider.instance.Watch(path, provider.valueSetFunc)
