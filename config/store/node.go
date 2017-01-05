@@ -19,6 +19,10 @@ type changeCallbackFn func(*node)
 // All nodes include a version value which is used when merging to preserve
 // or replace existing values.
 type node struct {
+	// A flag indicating whether this node's value has been modified
+	// due to a merge operation.
+	modified bool
+
 	// The path segment where this node is located.
 	segment string
 
@@ -125,7 +129,8 @@ func (n *node) leafValues(pathPrefix string, isRoot bool) map[string]string {
 // If the value argument does not match the expected values then merge will panic.
 //
 // A boolean flag is returned as an indicator of whether the subtree rooted
-// at this node was modified as a result of applying the given value.
+// at this node was modified as a result of applying the given value. Nodes
+// whose value changes or their subtree changes are flagged as modified.
 func (n *node) merge(version int, value interface{}, changeCallback changeCallbackFn) (modified bool) {
 	switch mergeValue := value.(type) {
 	case string:
@@ -143,7 +148,7 @@ func (n *node) merge(version int, value interface{}, changeCallback changeCallba
 		}
 
 		// Update the value and clear any existing child nodes
-		n.value = mergeValue
+		n.value, n.modified = mergeValue, true
 		if len(n.paths) != 0 {
 			n.paths = make(map[string]*node, 0)
 		}
@@ -185,6 +190,7 @@ func (n *node) merge(version int, value interface{}, changeCallback changeCallba
 		}
 
 		if modified && changeCallback != nil {
+			n.modified = true
 			changeCallback(n)
 		}
 
