@@ -20,13 +20,13 @@ func TestReset(t *testing.T) {
 	expValue := "value"
 	s.SetKey(1, path, expValue)
 	unsubFn := s.Watch(path, nopHandler)
-	cfg := s.Get(path)
+	cfg, _ := s.Get(path)
 	if cfg[path] != expValue {
 		t.Fatalf("expected cfg value for path %q to be %q; got %q", path, expValue, cfg[path])
 	}
 
 	s.Reset()
-	cfg = s.Get(path)
+	cfg, _ = s.Get(path)
 	if len(cfg) != 0 {
 		t.Fatalf("expected cfg after reset to be empty; got %v", cfg)
 	}
@@ -113,7 +113,8 @@ func TestLookup(t *testing.T) {
 func TestSetKey(t *testing.T) {
 	var s Store
 
-	modified, err := s.SetKey(1, "/foo/bar/baz", "test")
+	expVersion := 1
+	modified, err := s.SetKey(expVersion, "/foo/bar/baz", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,9 +126,12 @@ func TestSetKey(t *testing.T) {
 		"foo/bar/baz": "test",
 	}
 
-	values := s.Get("/")
+	values, version := s.Get("/")
 	if !reflect.DeepEqual(values, expValues) {
-		t.Fatalf("expected config store values to be:\n%v\n\ngot:\n%v", expValues, values)
+		t.Errorf("expected config store values to be:\n%v\n\ngot:\n%v", expValues, values)
+	}
+	if version != expVersion {
+		t.Errorf("expected config store value version to be %d; got %d", expVersion, version)
 	}
 }
 
@@ -180,13 +184,13 @@ func TestSetKeys(t *testing.T) {
 		t.Fatalf("expected config store values to be:\n%v\n\ngot:\n%v", expValues, values)
 	}
 
-	values = s.Get("/path/to/key/key1")
+	values, _ = s.Get("/path/to/key/key1")
 	if !reflect.DeepEqual(values, expValues2) {
 		t.Fatalf("expected config store values to be:\n%v\n\ngot:\n%v", expValues2, values)
 	}
 
 	// Initial delimiter may be omitted
-	values = s.Get("path/to/key/key1")
+	values, _ = s.Get("path/to/key/key1")
 	if !reflect.DeepEqual(values, expValues2) {
 		t.Fatalf("expected config store values to be:\n%v\n\ngot:\n%v", expValues2, values)
 	}
@@ -235,8 +239,9 @@ func TestGet(t *testing.T) {
 	}
 
 	specs := []struct {
-		path      string
-		expValues map[string]string
+		path       string
+		expValues  map[string]string
+		expVersion int
 	}{
 		{
 			path: "/",
@@ -273,7 +278,8 @@ func TestGet(t *testing.T) {
 		},
 	}
 
-	modified, err := s.SetKeys(1, "", valueMap)
+	expVersion := 1
+	modified, err := s.SetKeys(expVersion, "", valueMap)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,9 +288,12 @@ func TestGet(t *testing.T) {
 	}
 
 	for specIndex, spec := range specs {
-		values := s.Get(spec.path)
+		values, version := s.Get(spec.path)
 		if !reflect.DeepEqual(values, spec.expValues) {
 			t.Errorf("[spec %d] expected config store values to be:\n%v\n\ngot:\n%v", specIndex, spec.expValues, values)
+		}
+		if version != expVersion {
+			t.Errorf("[spec %d] expected config store value version to be %d; got %d", specIndex, expVersion, version)
 		}
 	}
 }
@@ -297,9 +306,12 @@ func TestGetWithNonExistingPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	values := s.Get("/boo/bar")
+	values, version := s.Get("/boo/bar")
 	if len(values) != 0 {
-		t.Fatalf("expected Get with non-existing path to return an empty map; got %v", values)
+		t.Errorf("expected Get with non-existing path to return an empty map; got %v", values)
+	}
+	if version != -1 {
+		t.Errorf("expected Get with non-existing path to return version equal to -1; got %d", version)
 	}
 }
 
@@ -488,7 +500,8 @@ type mockProvider struct {
 }
 
 func (p *mockProvider) Get(path string) map[string]string {
-	return p.store.Get(path)
+	v, _ := p.store.Get(path)
+	return v
 }
 
 func (p *mockProvider) Watch(path string, valueSetter func(string, map[string]string)) func() {
