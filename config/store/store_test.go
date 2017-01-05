@@ -1,10 +1,14 @@
 package store
 
 import (
+	"fmt"
 	"reflect"
+	"runtime"
+	"sync"
 	"testing"
-	"time"
 )
+
+var nopHandler = func(_ map[string]string, _ int) {}
 
 func TestReset(t *testing.T) {
 	var s Store
@@ -15,7 +19,7 @@ func TestReset(t *testing.T) {
 	path := "bar"
 	expValue := "value"
 	s.SetKey(1, path, expValue)
-	_, unsubFn := s.Watch(path)
+	unsubFn := s.Watch(path, nopHandler)
 	cfg := s.Get(path)
 	if cfg[path] != expValue {
 		t.Fatalf("expected cfg value for path %q to be %q; got %q", path, expValue, cfg[path])
@@ -301,87 +305,34 @@ func TestGetWithNonExistingPath(t *testing.T) {
 
 func TestWatchersForKeyNotYetInStore(t *testing.T) {
 	var s Store
+	var wg sync.WaitGroup
 
-	var cfgChans [2]<-chan map[string]string
-	var unsubFn UnsubscribeFunc
-	cfgChans[0], unsubFn = s.Watch("/foo/bar")
-	defer unsubFn()
+	expVersion := 1
+	expValues := map[string]string{"bar": "test"}
 
-	cfgChans[1], unsubFn = s.Watch("foo/bar")
-	defer unsubFn()
+	wg.Add(2)
+	var handler = func(values map[string]string, version int) {
+		defer wg.Done()
 
-	// Both channels should receive an empty map as the key does not exist yet
-	for index, cfgChan := range cfgChans {
-		select {
-		case cfg := <-cfgChan:
-			if len(cfg) != 0 {
-				t.Errorf("expected cfgChan %d to receive an empty map", index)
-			}
-		case <-time.After(1 * time.Second):
-			t.Errorf("timeout waiting for cfgChan %d to receive initial cfg", index)
+		if version != expVersion {
+			t.Errorf("expected handler to receive values with version %d; got %d", expVersion, version)
 		}
 
-	}
-
-	// Set value and trigger registered watchers
-	expValue := "test"
-	s.SetKey(1, "/foo/bar", expValue)
-
-	// Both channels should receive an update with the value we just set
-	for index, cfgChan := range cfgChans {
-		select {
-		case cfg := <-cfgChan:
-			if len(cfg) != 1 {
-				t.Errorf("expected cfgChan %d to receive a non-empty map", index)
-			}
-			for _, v := range cfg {
-				if v != expValue {
-					t.Errorf("expected cfgChan %d to receive value %q; got %q", index, expValue, v)
-				}
-			}
-		case <-time.After(1 * time.Second):
-			t.Errorf("timeout waiting for cfgChan %d to receive updated cfg", index)
-		}
-	}
-}
-
-func TestWatchersDropUpdateIfChannelIsFull(t *testing.T) {
-	var s Store
-
-	var cfgChans [2]<-chan map[string]string
-	var unsubFn UnsubscribeFunc
-	cfgChans[0], unsubFn = s.Watch("/foo/bar")
-	defer unsubFn()
-
-	cfgChans[1], unsubFn = s.Watch("foo/bar")
-	defer unsubFn()
-
-	// Fetch initial value (empty map) from the first channel
-	cfg := <-cfgChans[0]
-	if len(cfg) != 0 {
-		t.Errorf("expected cfgChan 0 to receive an empty map")
-	}
-
-	// Set value and trigger registered watchers
-	expValue := "test"
-	s.SetKey(1, "/foo/bar", expValue)
-
-	// First channel should receive the update
-	cfg = <-cfgChans[0]
-	if len(cfg) != 1 {
-		t.Errorf("expected cfgChan 0 to receive a non-empty map")
-	}
-	for _, v := range cfg {
-		if v != expValue {
-			t.Errorf("expected cfgChan 0 to receive value %q; got %q", expValue, v)
+		if !reflect.DeepEqual(values, expValues) {
+			t.Errorf("expected handler to receive values:\n%v\n\ngot:\n%v", expValues, values)
 		}
 	}
 
-	// second channel should drop the update as we didn't yet pull out the initial value
-	cfg = <-cfgChans[1]
-	if len(cfg) != 0 {
-		t.Errorf("expected cfgChan 1 to receive an empty map")
-	}
+	unsubFn := s.Watch("/foo/bar", handler)
+	defer unsubFn()
+
+	unsubFn = s.Watch("foo/bar", handler)
+	defer unsubFn()
+
+	// Set value and wait for handlers to be triggered
+	s.SetKey(expVersion, "/foo/bar", expValues["bar"])
+
+	wg.Wait()
 }
 
 func TestWatchersUnsubscribe(t *testing.T) {
@@ -390,11 +341,17 @@ func TestWatchersUnsubscribe(t *testing.T) {
 	// Calling unwatch when no watchers are defined should be ok
 	s.unwatch("/a/path", 1)()
 
-	cfgChan, unsubFn := s.Watch("/foo/bar")
-	<-cfgChan
+	var handler = func(values map[string]string, version int) {
+		t.Fatal("unexpected call to handler")
+	}
+
+	unsubFn := s.Watch("/foo/bar", handler)
 
 	// Setting a key for a path not watched should be ok
 	s.SetKey(1, "/another/path", "new value")
+
+	// Calling unwatch on an unknown path while at least one watcher is defined should be ok
+	s.unwatch("/a/path", 1)()
 
 	// Unsubscribe should prevent further changes from beeing sent to the channel
 	unsubFn()
@@ -406,69 +363,99 @@ func TestWatchersUnsubscribe(t *testing.T) {
 	}
 
 	s.SetKey(1, "/foo/bar", "new value")
+	runtime.Gosched()
+}
 
-	_, opened := <-cfgChan
-	if opened {
-		t.Fatalf("expected cfg channel to be closed after unsubscribing")
+func TestWatcherHandlerCannotDeadlockStore(t *testing.T) {
+	var s Store
+	var wg sync.WaitGroup
+
+	wg.Add(2)
+	var unsubFn UnsubscribeFunc
+	var handler = func(values map[string]string, version int) {
+		defer wg.Done()
+
+		expValue := fmt.Sprintf("value%d", version)
+		if values["bar"] != expValue {
+			t.Errorf(`expected values["bar"] to be %s; got %v`, expValue, values["bar"])
+		}
+
+		// Ensure that calling get does not block
+		s.Get("/foo/bar")
+
+		// Ensure that calling set does not block but still invokes the handler one more time
+		if version == 1 {
+			s.SetKey(2, "/foo/bar", "value2")
+		} else {
+			// Unsubscribing from inside the handler should work; same if the store gets reset
+			unsubFn()
+			s.Reset()
+		}
 	}
 
-	// Calling unwatch on an unknown path while at least one watcher is defined should be ok
-	s.unwatch("/a/path", 1)()
+	unsubFn = s.Watch("/foo/bar", handler)
+	defer unsubFn()
+
+	s.SetKey(1, "/foo/bar", "value1")
+	wg.Wait()
 }
 
 func TestValueProvider(t *testing.T) {
 	var s Store
-	provider := &mockProvider{}
-
-	s.RegisterValueProvider(provider)
-
-	path := "/foo/bar"
-	cfgChan, unsubFn := s.Watch(path)
-	defer unsubFn()
-
-	// Discard current value
-	<-cfgChan
-
-	// Trigger the mockProvider watch for path
-	expValue := "value"
-	expCfgMap := map[string]string{
+	var wg sync.WaitGroup
+	var path = "/foo/bar"
+	var expValue = "value"
+	var expCfgMap = map[string]string{
 		"bar": expValue,
 	}
-	provider.store.SetKey(1, path, expValue)
 
-	// Ensure that the path value propagates from the provider to the store watcher
-	select {
-	case cfgValue := <-cfgChan:
-		if !reflect.DeepEqual(cfgValue, expCfgMap) {
-			t.Fatalf("expected to receive config value:\n%v\n\ngot:\n%v", expCfgMap, cfgValue)
+	provider := &mockProvider{}
+	s.RegisterValueProvider(provider)
+
+	wg.Add(1)
+	var handler = func(values map[string]string, version int) {
+		defer wg.Done()
+
+		if !reflect.DeepEqual(values, expCfgMap) {
+			t.Fatalf("expected to receive config value:\n%v\n\ngot:\n%v", expCfgMap, values)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timeout waiting for watcher")
 	}
+
+	unsubFn := s.Watch(path, handler)
+	defer unsubFn()
+
+	// Trigger the mockProvider watch for path and ensure that the value gets picked up by the watcher
+	provider.store.SetKey(1, path, expValue)
+	wg.Wait()
 }
 
 func TestValueProviderThatAlreadyContainsPath(t *testing.T) {
 	var s Store
-	provider := &mockProvider{}
-
-	path := "/foo/bar"
-	expValue := "value"
-	provider.store.SetKey(1, path, expValue)
-
-	// Register provider and add watch
-	s.RegisterValueProvider(provider)
-	cfgChan, unsubFn := s.Watch(path)
-	defer unsubFn()
-
-	// The store should apply the provider's value and return that as the initial value
-	cfgValue := <-cfgChan
-
-	expCfgMap := map[string]string{
+	var wg sync.WaitGroup
+	var path = "/foo/bar"
+	var expValue = "value"
+	var expCfgMap = map[string]string{
 		"bar": expValue,
 	}
-	if !reflect.DeepEqual(cfgValue, expCfgMap) {
-		t.Fatalf("expected to receive config value:\n%v\n\ngot:\n%v", expCfgMap, cfgValue)
+
+	provider := &mockProvider{}
+	provider.store.SetKey(1, path, expValue)
+	s.RegisterValueProvider(provider)
+
+	wg.Add(1)
+	var handler = func(values map[string]string, version int) {
+		defer wg.Done()
+
+		if !reflect.DeepEqual(values, expCfgMap) {
+			t.Fatalf("expected to receive config value:\n%v\n\ngot:\n%v", expCfgMap, values)
+		}
 	}
+
+	unsubFn := s.Watch(path, handler)
+	defer unsubFn()
+
+	// Ensure that the value gets picked up by the watcher
+	wg.Wait()
 }
 
 func TestMisbehavingValueProvider(t *testing.T) {
@@ -479,14 +466,8 @@ func TestMisbehavingValueProvider(t *testing.T) {
 
 	// Register provider and add watch
 	s.RegisterValueProvider(provider)
-	cfgChan, unsubFn := s.Watch(path)
+	unsubFn := s.Watch(path, nopHandler)
 	defer unsubFn()
-
-	// The store should fail applying the provider's value and return back the empty initial value
-	cfgValue := <-cfgChan
-	if len(cfgValue) != 0 {
-		t.Fatalf("expected store to return an empty map")
-	}
 }
 
 func TestValueProviderShouldNotDeadlockStore(t *testing.T) {
@@ -498,14 +479,8 @@ func TestValueProviderShouldNotDeadlockStore(t *testing.T) {
 	// Register provider and add watch; s.Watch calls the value setter while inside
 	// Watch(); this shouldn't cause a deadlock
 	s.RegisterValueProvider(provider)
-	cfgChan, unsubFn := s.Watch(path)
+	unsubFn := s.Watch(path, nopHandler)
 	defer unsubFn()
-
-	// The store should fail applying the provider's value and return back the empty initial value
-	cfgValue := <-cfgChan
-	if len(cfgValue) != 0 {
-		t.Fatalf("expected store to return an empty map")
-	}
 }
 
 type mockProvider struct {
@@ -517,20 +492,9 @@ func (p *mockProvider) Get(path string) map[string]string {
 }
 
 func (p *mockProvider) Watch(path string, valueSetter func(string, map[string]string)) func() {
-	cfgChan, unsubFn := p.store.Watch(path)
-	// Discard initial value
-	<-cfgChan
-	go func() {
-		for {
-			cfg, ok := <-cfgChan
-			if !ok {
-				return
-			}
-			valueSetter(path, cfg)
-		}
-	}()
-
-	return unsubFn
+	return p.store.Watch(path, func(cfg map[string]string, _ int) {
+		valueSetter(path, cfg)
+	})
 }
 
 type badDataProvider struct {
