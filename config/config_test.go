@@ -13,12 +13,12 @@ func TestSetDefaults(t *testing.T) {
 		"boo":     "key2",
 	}
 
-	err := SetDefaults("/test/path", expValues)
+	err := SetDefaults("/test/provider/defaults", expValues)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	values := Store.Get("/test/path")
+	values, _ := Store.Get("/test/provider/defaults")
 	if !reflect.DeepEqual(values, expValues) {
 		t.Fatalf("expected Store.Get to return:\n%v\n\ngot:\n%v", expValues, values)
 	}
