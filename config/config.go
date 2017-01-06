@@ -1,5 +1,6 @@
 // Package config exposes a global configuration store instance and provides
-// helpers for setting default configuration values.
+// helpers for setting default configuration values and defining dynamic flags
+// linked to the global store.
 //
 // Including this package will automatically register the built-in configuration
 // providers. For more information please see the provider sub-package.
