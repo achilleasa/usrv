@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
+	"github.com/achilleasa/usrv/config"
 	"github.com/achilleasa/usrv/transport"
 )
 
@@ -294,6 +296,69 @@ func TestRPCOverHTTP(t *testing.T) {
 	headerValue := headers["User-Header"]
 	if headerValue != expHeaderValue {
 		t.Errorf("expected custom response header to contain %q; got %q", expHeaderValue, headerValue)
+	}
+}
+
+func TestHTTPReconfiguration(t *testing.T) {
+	// backup defaults and restore them after the test
+	defaultValues, _ := config.Store.Get("transport/http")
+	defer config.Store.SetKeys(0, "transport/http", defaultValues)
+
+	// Set our custom values
+	config.Store.SetKeys(0, "transport/http", map[string]string{
+		"port":              "9904",
+		"client/hostsuffix": "",
+	})
+
+	tr := NewHTTP()
+	tr.URLBuilder = newDefaultURLBuilder()
+	defer tr.Close()
+
+	expValue := "hello!"
+	handleRPC := func(req transport.ImmutableMessage, res transport.Message) {
+		res.SetPayload([]byte(expValue), nil)
+
+		// Ensure that listener uses the new port
+		expListenValue := "[::]:9905"
+		listenAddr := tr.listener.Addr().String()
+		if listenAddr != expListenValue {
+			t.Errorf("expected listener to use address %q; got %q", expListenValue, listenAddr)
+		}
+	}
+
+	err := tr.Bind("localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = tr.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure that listener uses the old port
+	expListenValue := "[::]:9904"
+	listenAddr := tr.listener.Addr().String()
+	if listenAddr != expListenValue {
+		t.Errorf("expected listener to use address %q; got %q", expListenValue, listenAddr)
+	}
+
+	// Update port configuration and wait for transport to redial itself
+	config.Store.SetKey(0, "transport/http/port", "9905")
+	<-time.After(100 * time.Millisecond)
+
+	req := newMessage("fromService/fromEndpoint", "localhost/toEndpoint")
+	defer req.Close()
+	resChan := tr.Request(req)
+
+	// Wait for response
+	res := <-resChan
+	payload, err := res.Payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != expValue {
+		t.Errorf("expected payload to be %q; got %q", expValue, string(payload))
 	}
 }
 

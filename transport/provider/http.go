@@ -116,6 +116,9 @@ func (b defaultURLBuilder) URL(service, endpoint string) string {
 //  - transport/http/port. The port to listen for incoming connections; if unspecified,
 //    the default port for the protocol will be used (default: )
 //
+// If any of the above values changes, the transport will automatically trigger
+// a redial while gracefully closing the existing listener.
+//
 // When operating as a client, the transport needs to be able to generate a
 // remote URL for outgoing requests. For this purpose it uses a ServiceURLBuilder
 // (URLBuilder field) which maps the outgoing service name and endpoint into an
@@ -203,11 +206,33 @@ func (t *HTTP) Dial() error {
 	}
 
 	// Start server goroutine
+	var wg sync.WaitGroup
+	wg.Add(2)
 	t.serverDoneChan = make(chan struct{}, 0)
-	go func() {
+	go func(doneChan chan struct{}) {
+		wg.Done()
 		nethttp.Serve(t.listener, nethttp.HandlerFunc(t.mux()))
-		close(t.serverDoneChan)
-	}()
+		close(doneChan)
+	}(t.serverDoneChan)
+
+	// Start config watcher
+	go func(doneChan chan struct{}) {
+		wg.Done()
+		for {
+			select {
+			case <-doneChan:
+				return
+			case <-t.protocol.ChangeChan():
+			case <-t.port.ChangeChan():
+			}
+
+			// Configuration changed; trigger redial
+			t.Dial()
+		}
+	}(t.serverDoneChan)
+
+	// Wait for both go-routines to start
+	wg.Wait()
 
 	t.dialed = true
 	return nil
@@ -350,7 +375,6 @@ func (t *HTTP) Request(reqMsg transport.Message) <-chan transport.ImmutableMessa
 		}
 
 		resChan <- resMsg
-		reqMsg.Close()
 		close(resChan)
 	}()
 
