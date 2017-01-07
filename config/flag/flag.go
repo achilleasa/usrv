@@ -146,6 +146,15 @@ func (f *flagImpl) CancelDynamicUpdates() {
 	}
 }
 
+// HasValue returns true if the flag's value is set either by a call to Set
+// or dynamically through a configuration store value.
+func (f *flagImpl) HasValue() bool {
+	f.rwMutex.RLock()
+	defer f.rwMutex.RUnlock()
+
+	return f.version != -1
+}
+
 // firstMapElement returns the first element in a map. Due to the way that map
 // iterators work this method will only return consistent results if the map
 // contains a single entry.
