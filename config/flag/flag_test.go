@@ -176,6 +176,10 @@ func TestFlagDynamicChange(t *testing.T) {
 	if value != expValue {
 		t.Fatalf("expected value %q; got %q", expValue, value)
 	}
+
+	if !f.HasValue() {
+		t.Fatalf("expected HasValue() to return true")
+	}
 }
 
 func TestFlagCancelDynamicUpdates(t *testing.T) {
@@ -219,6 +223,12 @@ func TestFlagValueMapperError(t *testing.T) {
 	case <-f.ChangeChan():
 		t.Fatal("unexpected change event")
 	case <-time.After(1 * time.Second):
+	}
+
+	expValue := false
+	hasValue := f.HasValue()
+	if hasValue != expValue {
+		t.Fatalf("expected HasValue() to return %t; got %t", expValue, hasValue)
 	}
 }
 
