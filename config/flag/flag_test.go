@@ -51,11 +51,15 @@ func TestFlagVersionComparisonLogic(t *testing.T) {
 	f.init(&s, stringMapper, "/foo/bar")
 
 	// Set with a version > 0
-	expVersion := 1
-	expValue := "value"
 	go func() {
+		expVersion := 1
+		expValue := "value"
+
 		<-time.After(100 * time.Millisecond)
 		f.set(expVersion, expValue, true)
+
+		f.rwMutex.RLock()
+		defer f.rwMutex.RUnlock()
 
 		if f.version != expVersion {
 			t.Fatalf("expected version to be %d; got %d", expVersion, f.version)
@@ -68,8 +72,14 @@ func TestFlagVersionComparisonLogic(t *testing.T) {
 
 	// Set with a version less than the one stored should be a no-op
 	go func() {
+		expVersion := 1
+		expValue := "value"
+
 		<-time.After(100 * time.Millisecond)
 		f.set(0, "new value", true)
+
+		f.rwMutex.RLock()
+		defer f.rwMutex.RUnlock()
 
 		if f.version != expVersion {
 			t.Fatalf("expected version to be %d; got %d", expVersion, f.version)
@@ -86,9 +96,14 @@ func TestFlagVersionComparisonLogic(t *testing.T) {
 
 	// Set with greater version but same value should only update the version but not trigger an update
 	go func() {
+		expVersion := 2
+		expValue := "value"
+
 		<-time.After(100 * time.Millisecond)
-		f.set(2, expValue, true)
-		expVersion = 2
+		f.set(expVersion, expValue, true)
+
+		f.rwMutex.RLock()
+		defer f.rwMutex.RUnlock()
 
 		if f.version != expVersion {
 			t.Fatalf("expected version to be %d; got %d", expVersion, f.version)
@@ -102,11 +117,15 @@ func TestFlagVersionComparisonLogic(t *testing.T) {
 	}
 
 	// Set with greater version and different valueMapper
-	expValue = "new value"
-	expVersion = 3
 	go func() {
+		expValue := "new value"
+		expVersion := 3
+
 		<-time.After(100 * time.Millisecond)
 		f.set(expVersion, expValue, true)
+
+		f.rwMutex.RLock()
+		defer f.rwMutex.RUnlock()
 
 		if f.version != expVersion {
 			t.Fatalf("expected version to be %d; got %d", expVersion, f.version)
