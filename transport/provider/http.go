@@ -2,11 +2,14 @@ package provider
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
 	nethttp "net/http"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -25,13 +28,28 @@ const (
 	senderHeader         = "Sender"
 	senderEndpointHeader = "Sender-Endpoint"
 	errorHeader          = "Error"
+
+	// TLS verification options
+	tlsVerifySkip          = "skip"
+	tlsVerifyAddToCertPool = "cert_pool"
 )
 
 // A set of endpoints that can be hooked by tests
 var (
-	listen     = net.Listen
-	newRequest = nethttp.NewRequest
-	readAll    = ioutil.ReadAll
+	listen          = net.Listen
+	tlsListen       = tls.Listen
+	newRequest      = nethttp.NewRequest
+	readAll         = ioutil.ReadAll
+	readFile        = ioutil.ReadFile
+	loadX509KeyPair = tls.LoadX509KeyPair
+	systemCertPool  = x509.SystemCertPool
+	setFinalizer    = runtime.SetFinalizer
+)
+
+var (
+	errMissingCertificate   = errors.New("missing tls certificate/key configuration settings")
+	errAddCertificateToPool = errors.New("could not add certificate to client certificate pool")
+	errInvalidVerifyMode    = errors.New(`invalid tls verify option; supported values are "skip" and "cert_pool"`)
 )
 
 // Binding encapsulates the details of a service/endpoint combination and
@@ -86,6 +104,18 @@ func (b defaultURLBuilder) URL(service, endpoint string) string {
 	)
 }
 
+type requestMaker interface {
+	Do(req *nethttp.Request) (*nethttp.Response, error)
+}
+
+type requestMakerThatAlwaysFails struct {
+	err error
+}
+
+func (rm *requestMakerThatAlwaysFails) Do(req *nethttp.Request) (*nethttp.Response, error) {
+	return nil, rm.err
+}
+
 // HTTP implements a usrv transport over HTTP.
 //
 // Bindings for this transport must be defined before a call to Dial(). Any
@@ -112,9 +142,18 @@ func (b defaultURLBuilder) URL(service, endpoint string) string {
 //
 // The transport server adds watches to the global configuration store for the
 // following configuration parameters:
-//  - transport/http/protocol. The protocol to use (default: http)
-//  - transport/http/port. The port to listen for incoming connections; if unspecified,
-//    the default port for the protocol will be used (default: )
+//  - transport/http/protocol (default: http). The protocol to use; either "http" or "https".
+//  - transport/http/port (default: ""). The port to listen for incoming connections; if unspecified,
+//    the default port for the protocol will be used.
+//  - transport/http/tls/certificate (default: ""). The path to a SSL certificate; used only if protocol is "https".
+//  - transport/http/tls/key (default: ""). The path to the key for the certificate; used only if protocol is "https".
+//  - transport/http/tls/strict (default: "true"). Enables strict TLS configuration to achieve a perfect SSL labs score (see https://blog.bracebin.com/achieving-perfect-ssl-labs-score-with-go); used only if protocol is "https".
+//
+// The following configuration parameter is used by the transport in client mode
+// when the protocol is set to "https":
+//  - transport/http/client/verifycert (default: "cert_pool"). Defines how the http client verifies self-signed SSL certificates.
+//    Supported values are either "cert_pool" (append certificate to the system's certificate pool) or "skip" which
+//    sets the "InsecureSkipVerify" flag in the client's TLS configuration.
 //
 // If any of the above values changes, the transport will automatically trigger
 // a redial while gracefully closing the existing listener.
@@ -146,16 +185,29 @@ type HTTP struct {
 	// The list of declared bindings.
 	bindings []binding
 
-	// A channel which the server goroutine uses to notify us that it has
-	// shut down properly.
+	// A channel which is closed to notify the config watcher to exit
+	watcherDoneChan chan struct{}
+
+	// A channel which the server goroutine uses to notify us that it has shut down properly.
 	serverDoneChan chan struct{}
 
-	// Server config options.
-	protocol *flag.StringFlag
-	port     *flag.Uint32Flag
+	// Config options.
+	config        *flag.MapFlag
+	protocol      *flag.StringFlag
+	port          *flag.Uint32Flag
+	tlsCert       *flag.StringFlag
+	tlsKey        *flag.StringFlag
+	tlsStrictMode *flag.BoolFlag
+	tlsVerify     *flag.StringFlag
 
 	// The listener for http requests.
 	listener net.Listener
+
+	// A client implementation that can perform http requests.
+	client requestMaker
+
+	// A RW mutex allowing access to the client
+	clientMutex sync.RWMutex
 
 	// URLBuilder can be overriden to implement custom service discovery rules.
 	URLBuilder ServiceURLBuilder
@@ -164,10 +216,21 @@ type HTTP struct {
 // NewHTTP creates a new http transport instance.
 func NewHTTP() *HTTP {
 	t := &HTTP{
-		bindings: make([]binding, 0),
-		protocol: config.StringFlag("transport/http/protocol"),
-		port:     config.Uint32Flag("transport/http/port"),
+		bindings:      make([]binding, 0),
+		config:        config.MapFlag("transport/http"),
+		protocol:      config.StringFlag("transport/http/protocol"),
+		port:          config.Uint32Flag("transport/http/port"),
+		tlsCert:       config.StringFlag("transport/http/tls/certificate"),
+		tlsKey:        config.StringFlag("transport/http/tls/key"),
+		tlsVerify:     config.StringFlag("transport/http/client/verifycert"),
+		tlsStrictMode: config.BoolFlag("transport/http/tls/strict"),
+
+		watcherDoneChan: make(chan struct{}, 0),
 	}
+
+	t.createClient()
+	go t.configChangeMonitor()
+	setFinalizer(t, func(t *HTTP) { close(t.watcherDoneChan) })
 
 	return t
 }
@@ -177,65 +240,7 @@ func (t *HTTP) Dial() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	// Check that we support the requested protocol
-	protocol := t.protocol.Get()
-	var listenPort string
-	switch protocol {
-	case "http":
-		listenPort = ":http"
-	default:
-		return fmt.Errorf("unsupported protocol %q", protocol)
-	}
-
-	// If a port is specified use it to override the listener port
-	if t.port.HasValue() {
-		listenPort = fmt.Sprintf(":%d", t.port.Get())
-	}
-
-	// If we are already listening shutdown the old server
-	if t.dialed {
-		t.listener.Close()
-		<-t.serverDoneChan
-		t.dialed = false
-	}
-
-	var err error
-	t.listener, err = listen("tcp", listenPort)
-	if err != nil {
-		return err
-	}
-
-	// Start server goroutine
-	var wg sync.WaitGroup
-	wg.Add(2)
-	t.serverDoneChan = make(chan struct{}, 0)
-	go func(doneChan chan struct{}) {
-		wg.Done()
-		nethttp.Serve(t.listener, nethttp.HandlerFunc(t.mux()))
-		close(doneChan)
-	}(t.serverDoneChan)
-
-	// Start config watcher
-	go func(doneChan chan struct{}) {
-		wg.Done()
-		for {
-			select {
-			case <-doneChan:
-				return
-			case <-t.protocol.ChangeChan():
-			case <-t.port.ChangeChan():
-			}
-
-			// Configuration changed; trigger redial
-			t.Dial()
-		}
-	}(t.serverDoneChan)
-
-	// Wait for both go-routines to start
-	wg.Wait()
-
-	t.dialed = true
-	return nil
+	return t.dial()
 }
 
 // Close shuts down the transport.
@@ -300,6 +305,9 @@ func (t *HTTP) Request(reqMsg transport.Message) <-chan transport.ImmutableMessa
 		resMsg.ReceiverField = reqMsg.Sender()
 		resMsg.ReceiverEndpointField = reqMsg.SenderEndpoint()
 
+		// Acquire read lock
+		t.clientMutex.RLock()
+
 		// Map request message to an HTTP request
 		payload, _ := reqMsg.Payload()
 		httpReq, err := newRequest(
@@ -310,7 +318,6 @@ func (t *HTTP) Request(reqMsg transport.Message) <-chan transport.ImmutableMessa
 		if err != nil {
 			resMsg.ErrField = err
 			resChan <- resMsg
-			reqMsg.Close()
 			close(resChan)
 			return
 		}
@@ -327,7 +334,10 @@ func (t *HTTP) Request(reqMsg transport.Message) <-chan transport.ImmutableMessa
 		httpReq.Header.Set(headerPrefix+senderEndpointHeader, reqMsg.SenderEndpoint())
 
 		// Exec request
-		httpRes, err := nethttp.DefaultClient.Do(httpReq)
+		httpRes, err := t.client.Do(httpReq)
+
+		// Release lock
+		t.clientMutex.RUnlock()
 
 		if httpRes != nil {
 			defer httpRes.Body.Close()
@@ -354,7 +364,6 @@ func (t *HTTP) Request(reqMsg transport.Message) <-chan transport.ImmutableMessa
 		if err != nil {
 			resMsg.ErrField = err
 			resChan <- resMsg
-			reqMsg.Close()
 			close(resChan)
 			return
 		}
@@ -381,11 +390,110 @@ func (t *HTTP) Request(reqMsg transport.Message) <-chan transport.ImmutableMessa
 	return resChan
 }
 
+// The actual implementation of dial. Must be invoked after acquiring the mutex.
+func (t *HTTP) dial() error {
+
+	// Check that we support the requested protocol
+	var err error
+	var tlsConfig *tls.Config
+	protocol := t.protocol.Get()
+	var listenPort string
+	switch protocol {
+	case "http":
+		listenPort = ":http"
+	case "https":
+		listenPort = ":https"
+		tlsConfig, err = t.buildTLSConfig()
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unsupported protocol %q", protocol)
+	}
+
+	// If a port is specified use it to override the listener port
+	if t.port.HasValue() {
+		listenPort = fmt.Sprintf(":%d", t.port.Get())
+	}
+
+	// If we are already listening shutdown the old server
+	if t.dialed {
+		t.listener.Close()
+		<-t.serverDoneChan
+		t.dialed = false
+	}
+
+	if tlsConfig != nil {
+		t.listener, err = tlsListen("tcp", listenPort, tlsConfig)
+	} else {
+		t.listener, err = listen("tcp", listenPort)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Update client
+	err = t.createClient()
+	if err != nil {
+		t.listener.Close()
+		return err
+	}
+
+	// Start server goroutine
+	var wg sync.WaitGroup
+	wg.Add(1)
+	t.serverDoneChan = make(chan struct{}, 0)
+	go func(doneChan chan struct{}) {
+		wg.Done()
+		srv := nethttp.Server{
+			Handler:      nethttp.HandlerFunc(t.mux(t.tlsStrictMode.Get())),
+			TLSConfig:    tlsConfig,
+			TLSNextProto: make(map[string]func(*nethttp.Server, *tls.Conn, nethttp.Handler), 0),
+		}
+		srv.Serve(t.listener)
+		close(doneChan)
+	}(t.serverDoneChan)
+
+	// Wait for server to start
+	wg.Wait()
+
+	t.dialed = true
+	return nil
+}
+
+// ConfigChangeMonitor watches for configuration changes updates the transport
+// client and triggers a redial if the transport was already dialed
+func (t *HTTP) configChangeMonitor() {
+	for {
+		select {
+		case <-t.watcherDoneChan:
+			return
+		case <-t.config.ChangeChan():
+		}
+
+		// If the transport is dialed force a redial; this also updates the client
+		t.mutex.Lock()
+		if t.dialed {
+			t.dial()
+			t.mutex.Unlock()
+			continue
+		}
+
+		// Just update the client
+		t.createClient()
+		t.mutex.Unlock()
+	}
+}
+
 // Mux returns the http server request handler that is invoked (in a goroutine)
 // for each incoming HTTP request.
-func (t *HTTP) mux() func(nethttp.ResponseWriter, *nethttp.Request) {
+func (t *HTTP) mux(strictMode bool) func(nethttp.ResponseWriter, *nethttp.Request) {
 	return func(rw nethttp.ResponseWriter, httpReq *nethttp.Request) {
 		defer httpReq.Body.Close()
+
+		if strictMode {
+			rw.Header().Add("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		}
 
 		// All endpoint request must use a POST operation
 		if httpReq.Method != "POST" {
@@ -477,10 +585,112 @@ func (t *HTTP) mux() func(nethttp.ResponseWriter, *nethttp.Request) {
 	}
 }
 
+// CreateClient generates a new http client instance and atomically replaces the
+// one present in the transport.
+func (t *HTTP) createClient() error {
+	t.clientMutex.Lock()
+	defer t.clientMutex.Unlock()
+
+	if t.URLBuilder == nil {
+		t.URLBuilder = newDefaultURLBuilder()
+	}
+
+	var client requestMaker
+	switch t.protocol.Get() {
+	case "http":
+		client = &nethttp.Client{}
+	case "https":
+		var tlsConfig *tls.Config
+		var err error
+
+		verifyMode := t.tlsVerify.Get()
+		switch verifyMode {
+		case tlsVerifySkip:
+			tlsConfig = &tls.Config{
+				InsecureSkipVerify: true,
+			}
+		case tlsVerifyAddToCertPool:
+			tlsConfig, err = t.buildTLSConfig()
+			if err != nil {
+				t.client = &requestMakerThatAlwaysFails{err: err}
+				return err
+			}
+
+			certPool, err := systemCertPool()
+			if err != nil {
+				t.client = &requestMakerThatAlwaysFails{err: err}
+				return err
+			}
+
+			certData, err := readFile(t.tlsCert.Get())
+			if err != nil {
+				t.client = &requestMakerThatAlwaysFails{err: err}
+				return err
+			}
+			added := certPool.AppendCertsFromPEM(certData)
+			if !added {
+				err = errAddCertificateToPool
+				t.client = &requestMakerThatAlwaysFails{err: err}
+				return err
+			}
+
+			tlsConfig.RootCAs = certPool
+		default:
+			return errInvalidVerifyMode
+		}
+
+		client = &nethttp.Client{
+			Transport: &nethttp.Transport{
+				TLSClientConfig: tlsConfig,
+			},
+		}
+	}
+
+	// Set client
+	t.client = client
+	return nil
+}
+
+// BuildTLSConfig validates the TLS configuration options and generates a TLS
+// configuration to be used by a client or a server
+func (t *HTTP) buildTLSConfig() (tlsConfig *tls.Config, err error) {
+	// Verify TLS settings and populate tls config
+	tlsCert := t.tlsCert.Get()
+	tlsKey := t.tlsKey.Get()
+	if tlsCert == "" || tlsKey == "" {
+		return nil, errMissingCertificate
+	}
+
+	// Load certificate
+	cert, err := loadX509KeyPair(tlsCert, tlsKey)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	if t.tlsStrictMode.Get() {
+		tlsConfig.MinVersion = tls.VersionTLS12
+		tlsConfig.CurvePreferences = []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256}
+		tlsConfig.PreferServerCipherSuites = true
+		tlsConfig.CipherSuites = []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		}
+	}
+
+	return tlsConfig, nil
+}
+
 func init() {
 	config.SetDefaults("transport/http", map[string]string{
 		"protocol":          "http",
 		"port":              "",
+		"tls/certificate":   "",
+		"tls/key":           "",
+		"tls/strict":        "true",
 		"client/hostsuffix": ".service",
+		"client/verifycert": tlsVerifyAddToCertPool,
 	})
 }
