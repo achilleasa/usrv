@@ -1,11 +1,15 @@
 package provider
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -105,6 +109,117 @@ func TestHTTPErrors(t *testing.T) {
 	}
 	if httpRes.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected non-POST request to get 404 status code; got %d", httpRes.StatusCode)
+	}
+}
+
+func TestTLSErrors(t *testing.T) {
+	tr := NewHTTP()
+	tr.port.Set(9444)
+	tr.protocol.Set("https")
+
+	// Test invalid verify mode
+	tr.tlsVerify.Set("bogus")
+	expError := errInvalidVerifyMode
+	err := tr.createClient()
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	// Missing certificate file option
+	tr.tlsVerify.Set(tlsVerifyAddToCertPool)
+	expError = errMissingCertificate
+	tr.tlsCert.Set("")
+	err = tr.createClient()
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	// Calling dial should also fail with same error
+	err = tr.Dial()
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	// Missing certificate key file option
+	tr.tlsCert.Set("foo")
+	tr.tlsKey.Set("")
+	err = tr.createClient()
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	// Load keypair error
+	tr.tlsKey.Set("bar")
+	origLoadX509KeyPair := loadX509KeyPair
+	defer func() {
+		loadX509KeyPair = origLoadX509KeyPair
+	}()
+	expError = errors.New("loadX509KeyPair error")
+	loadX509KeyPair = func(_, _ string) (tls.Certificate, error) {
+		return tls.Certificate{}, expError
+	}
+	err = tr.createClient()
+	loadX509KeyPair = origLoadX509KeyPair
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	// System cert pool errors
+	loadX509KeyPair = func(_, _ string) (tls.Certificate, error) {
+		return tls.Certificate{}, nil
+	}
+
+	origSystemCertPool := systemCertPool
+	expError = errors.New("systemCertPool error")
+	systemCertPool = func() (*x509.CertPool, error) {
+		return nil, expError
+	}
+	err = tr.createClient()
+	systemCertPool = origSystemCertPool
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	// Error reading certificate files
+	origReadFile := readFile
+	expError = errors.New("readFile error")
+	readFile = func(_ string) ([]byte, error) {
+		return nil, expError
+	}
+	err = tr.createClient()
+	defer func() {
+		readFile = origReadFile
+	}()
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	// AppendPEM errors
+	readFile = func(_ string) ([]byte, error) {
+		return []byte("invalid"), nil
+	}
+	expError = errAddCertificateToPool
+	err = tr.createClient()
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	// Calling dial should also fail with same error
+	err = tr.Dial()
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	// At this point the http client is a dummy requestMaker that always fails
+	req := newMessage("fromService/fromEndpoint", "localhost/toEndpoint")
+	defer req.Close()
+	resChan := tr.Request(req)
+
+	// Wait for response
+	res := <-resChan
+	_, err = res.Payload()
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
 	}
 }
 
@@ -299,15 +414,85 @@ func TestRPCOverHTTP(t *testing.T) {
 	}
 }
 
+func TestRPCOverHTTPS(t *testing.T) {
+	certFile, keyFile := genSSLCert(t)
+	defer os.Remove(certFile)
+	defer os.Remove(keyFile)
+
+	// By default, the http provider will add the certificate to the system's certificate pool.
+	tr := NewHTTP()
+	tr.port.Set(9443)
+	tr.protocol.Set("https")
+	tr.tlsStrictMode.Set(true)
+	tr.tlsCert.Set(certFile)
+	tr.tlsKey.Set(keyFile)
+	tr.URLBuilder = testURLBuilder{addr: "https://localhost:9443"}
+	defer tr.Close()
+
+	expValue := "hello!"
+	handleRPC := func(req transport.ImmutableMessage, res transport.Message) {
+		res.SetPayload([]byte(expValue), nil)
+	}
+
+	err := tr.Bind("localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = tr.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := newMessage("fromService/fromEndpoint", "localhost/toEndpoint")
+	defer req.Close()
+	resChan := tr.Request(req)
+
+	// Wait for response
+	res := <-resChan
+
+	payload, err := res.Payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != expValue {
+		t.Errorf("expected payload to be %q; got %q", expValue, string(payload))
+	}
+
+	// Test skipVerification mode
+	tr.tlsVerify.Set(tlsVerifySkip)
+	tr.config.Set(map[string]string{})
+	<-time.After(100 * time.Millisecond)
+
+	// Send request again
+	resChan = tr.Request(req)
+	res = <-resChan
+
+	payload, err = res.Payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != expValue {
+		t.Errorf("expected payload to be %q; got %q", expValue, string(payload))
+	}
+}
+
 func TestHTTPReconfiguration(t *testing.T) {
+	certFile, keyFile := genSSLCert(t)
+	defer os.Remove(certFile)
+	defer os.Remove(keyFile)
+
 	// backup defaults and restore them after the test
 	defaultValues, _ := config.Store.Get("transport/http")
 	defer config.Store.SetKeys(0, "transport/http", defaultValues)
 
 	// Set our custom values
 	config.Store.SetKeys(0, "transport/http", map[string]string{
+		"protocol":          "http",
 		"port":              "9904",
 		"client/hostsuffix": "",
+		"tls/certificate":   certFile,
+		"tls/key":           keyFile,
 	})
 
 	tr := NewHTTP()
@@ -360,6 +545,101 @@ func TestHTTPReconfiguration(t *testing.T) {
 	if string(payload) != expValue {
 		t.Errorf("expected payload to be %q; got %q", expValue, string(payload))
 	}
+
+	// Now switch to https mode
+	config.Store.SetKey(0, "transport/http/protocol", "https")
+	<-time.After(100 * time.Millisecond)
+
+	// Resend request
+	resChan = tr.Request(req)
+	res = <-resChan
+	payload, err = res.Payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != expValue {
+		t.Errorf("expected payload to be %q; got %q", expValue, string(payload))
+	}
+}
+
+func TestHTTPClientReconfiguration(t *testing.T) {
+	certFile, keyFile := genSSLCert(t)
+	defer os.Remove(certFile)
+	defer os.Remove(keyFile)
+
+	// backup defaults and restore them after the test
+	defaultValues, _ := config.Store.Get("transport/http")
+	defer config.Store.SetKeys(0, "transport/http", defaultValues)
+
+	// Set our custom values
+	config.Store.SetKeys(0, "transport/http", map[string]string{
+		"protocol":          "http",
+		"port":              "9910",
+		"client/hostsuffix": "",
+		"tls/certificate":   certFile,
+		"tls/key":           keyFile,
+	})
+
+	trServer := NewHTTP()
+	trClient := NewHTTP()
+	trClient.URLBuilder = newDefaultURLBuilder()
+	defer trServer.Close()
+	defer trClient.Close()
+
+	// Now switch to https mode
+	config.Store.SetKey(0, "transport/http/protocol", "https")
+	<-time.After(100 * time.Millisecond)
+
+	expValue := "hello!"
+	handleRPC := func(req transport.ImmutableMessage, res transport.Message) {
+		res.SetPayload([]byte(expValue), nil)
+	}
+
+	err := trServer.Bind("localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = trServer.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := newMessage("fromService/fromEndpoint", "localhost/toEndpoint")
+	defer req.Close()
+	resChan := trClient.Request(req)
+	res := <-resChan
+	payload, err := res.Payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != expValue {
+		t.Errorf("expected payload to be %q; got %q", expValue, string(payload))
+	}
+}
+
+func TestHTTPConfigWorkerCleanup(t *testing.T) {
+	origSetFinalizer := setFinalizer
+	defer func() {
+		setFinalizer = origSetFinalizer
+	}()
+	var finalizer func(*HTTP)
+	setFinalizer = func(_ interface{}, cb interface{}) {
+		finalizer = cb.(func(*HTTP))
+	}
+
+	tr := NewHTTP()
+	finalizer(tr)
+	time.After(500 * time.Millisecond)
+
+	// Trigger change
+	tr.client = nil
+	tr.port.Set(1234)
+	time.After(500 * time.Millisecond)
+
+	if tr.client != nil {
+		t.Fatalf("expected client to remain nil")
+	}
 }
 
 func TestDefaultURLBuilder(t *testing.T) {
@@ -394,4 +674,76 @@ type testURLBuilder struct {
 
 func (b testURLBuilder) URL(service, endpoint string) string {
 	return fmt.Sprintf("%s/%s/%s", b.addr, service, endpoint)
+}
+
+func genSSLCert(t *testing.T) (certFile, keyFile string) {
+	certificate := `
+-----BEGIN CERTIFICATE-----
+MIID9DCCAtygAwIBAgIJAPc67yL6gpa6MA0GCSqGSIb3DQEBBQUAMFkxCzAJBgNV
+BAYTAkFVMRMwEQYDVQQIEwpTb21lLVN0YXRlMSEwHwYDVQQKExhJbnRlcm5ldCBX
+aWRnaXRzIFB0eSBMdGQxEjAQBgNVBAMTCWxvY2FsaG9zdDAeFw0xNzAxMDcxMDQx
+NDdaFw0yNzAxMDUxMDQxNDdaMFkxCzAJBgNVBAYTAkFVMRMwEQYDVQQIEwpTb21l
+LVN0YXRlMSEwHwYDVQQKExhJbnRlcm5ldCBXaWRnaXRzIFB0eSBMdGQxEjAQBgNV
+BAMTCWxvY2FsaG9zdDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAOu4
+ipoPAnx+9pW6lwve60SmtTo8EUcAlFlTcGvSZusH2KFj0bcqTao7JWfHgpE/+4xx
+HkrOOF7rcrQe+TecyfddcFpmVJNp37U0fqTraTTDw+fs/xKuRxkH/mLEBUicwPu+
+bkJ7IMlH0Ox1nhORhPIZZ3/6nxj7tWv2ezfNNftQ+sYpwLb/FwoLMekuSDYdy68I
+7/rpFgioo3siXG2hfaIKM7YKiCjV557qub5H58yy/QodbsjpAAt4HDjMIB5vBSS9
+KqhuFyU67u+7XAegU9Luk2Je07PI3EJs/rubbCLWrlWBvE1Z9l6UC0uzb7PgxtmH
+qysJ8tc8ScD63Z3iDtUCAwEAAaOBvjCBuzAdBgNVHQ4EFgQUxcW57cAYO8Ollie+
+CgC94zdZGFwwgYsGA1UdIwSBgzCBgIAUxcW57cAYO8Ollie+CgC94zdZGFyhXaRb
+MFkxCzAJBgNVBAYTAkFVMRMwEQYDVQQIEwpTb21lLVN0YXRlMSEwHwYDVQQKExhJ
+bnRlcm5ldCBXaWRnaXRzIFB0eSBMdGQxEjAQBgNVBAMTCWxvY2FsaG9zdIIJAPc6
+7yL6gpa6MAwGA1UdEwQFMAMBAf8wDQYJKoZIhvcNAQEFBQADggEBAAW5Dv9/Yc7g
+ZIVbO9wGrjRJWwq1K7A9TIsoQCTZotLXNPFrtP+Bn7a1ZKSmFF2hSyRRAZtbgvXE
+cZuKw1Uo6HJxsvP73ChqGsJAN8n/46qo/8rpYXyFd9P0wRydmeQBsLK7P0NOkxUF
+PrP63jYSfTpxJ0zGBHvwEOLkx/ocGgk/rL8OJIiRSWR864BmDfwQHIyJs8bZ+1k0
+83Nr/SPqJua/UVDxXxwP52pCvu5ZVgi7xG9WdIpA1w+YCec9rEJ7Xchycp27Z6lG
+3dgjTIXntj4Q64d8HXX/0+DuHgYGJbCXbPzkcJ8mr2+uBgEa/ZHS3QkYDT2kJn7E
+aBwkEI28gm4=
+-----END CERTIFICATE-----`
+
+	key := `-----BEGIN RSA PRIVATE KEY-----
+MIIEpQIBAAKCAQEA67iKmg8CfH72lbqXC97rRKa1OjwRRwCUWVNwa9Jm6wfYoWPR
+typNqjslZ8eCkT/7jHEeSs44XutytB75N5zJ911wWmZUk2nftTR+pOtpNMPD5+z/
+Eq5HGQf+YsQFSJzA+75uQnsgyUfQ7HWeE5GE8hlnf/qfGPu1a/Z7N801+1D6xinA
+tv8XCgsx6S5INh3Lrwjv+ukWCKijeyJcbaF9ogoztgqIKNXnnuq5vkfnzLL9Ch1u
+yOkAC3gcOMwgHm8FJL0qqG4XJTru77tcB6BT0u6TYl7Ts8jcQmz+u5tsItauVYG8
+TVn2XpQLS7Nvs+DG2YerKwny1zxJwPrdneIO1QIDAQABAoIBAQDkUoQuZYuK+4/t
+yCa2oN5SSQgRuE0j8TPAskmaptp5ncf/y6g/OwKveUrqEx4tg0Qs7QTigI2po3Yf
+ckED1SLsL928MpKJl2vRIV/qbvwg197Sr4UCmzzSyiNll2lmxC9JqVMzogBH9wAv
+il3rpnCX8HOIS0H/+Q/p233Otz8qhZH+uGeceMbUsg3StYWDIJwUeIzx4XN0sre5
+OCzrHw+ad6NMhREo93O24eNygl1J5uu9AuYGoRqLQOIBDCyMTb3NChtEJ9a0pm46
+sI/3LH6xSwF7J1MgOhDwdEzt1ueOB6dvNWqydoCXiufc9kpcn82xUNoGOhGJmvMz
+6fm+kPuhAoGBAPYQWS8NQaPzXlZnkIZyERemPafgcLWrN4pVSbB4wywK6EhawYva
+B7jeG2bf5KChpZFHBatknwEn9vM9FNgCt7j7qUrFABD9GS7RXBjpg4SU5Sz3jYcV
+wOjpE3Yorki4AJkqO+v8YL2EiE3iJOxtVTsQAvNzwHUm35KtMoCngAADAoGBAPU9
+RhML+gZHUqy0/w7/rXf5WqYa/i2fx7RH0Z0iiRp7AMNNcXOfAa+2LEs0cJIgzvBP
+slnjcAcpmKhxcqM2755iqnkTdKBRwvPlFFa7679YlOPsoxta1yIec0HIPXtHi3A3
+pE1EnL8aM30+VTfNfSXVlyA3evMj+LcleUQNy1pHAoGAHX4CIniVSIBP601IbkTX
+tZzwQOHOwIeABa2JQoSG6A16n8l47zk3ubmtURw+u94ECTCZBlzuDeZrW+YTTHyu
+5pYLSXHpOyAK16iyQC4k3Ew4V7ZoGSvLTl85PO1NTlv3fmQogHVkZvKun58eS9Qi
+5gxaPjG+fIwnOd5WckMhPV8CgYEA8U53cypnvGHVwcbe6f0+zTx4q9UHohEESioY
+4UsoKPw7RfEf3yroV+MjNmTFF6Rcuy1QSw52HzYY1jW7HUpjATAImdZA/bc14xLX
+rnh+getBpfwkijgaU6Iuut2zUWiWlbbKXpVSvt+jJmt9Isl5iQ7gA31T54bPpjaj
+WglQvOUCgYEA6AZxHm061f9CdqQbGjnUPJJ4b1poG9m+hxtuBCjg1CCQiKGwGRKb
+o7nSslRFPeLYp/rG8lZIQQYIku9a3aHt6JGV9kBj4Xoe6UvPcyxUn1rBDUELYbVZ
+yRVjlpqDKQEAAtSLyU7rvW6Im0uwThEzrsMnxPXA2gPNfDN9TwWhtxY=
+-----END RSA PRIVATE KEY-----`
+
+	cf, err := ioutil.TempFile("", "ssl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf.WriteString(certificate)
+	cf.Close()
+
+	kf, err := ioutil.TempFile("", "ssl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kf.WriteString(key)
+	kf.Close()
+
+	return cf.Name(), kf.Name()
 }
