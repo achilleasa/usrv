@@ -683,6 +683,14 @@ func (t *HTTP) buildTLSConfig() (tlsConfig *tls.Config, err error) {
 	return tlsConfig, nil
 }
 
+// HTTPTransportFactory is a factory for creating usrv transport instances
+// whose concrete implementation is the HTTP transport. This function behaves
+// exactly the same as NewHTTP() but returns back a Transport interface allowing
+// it to be used as usrv.DefaultTransportFactory.
+func HTTPTransportFactory() transport.Transport {
+	return NewHTTP()
+}
+
 func init() {
 	config.SetDefaults("transport/http", map[string]string{
 		"protocol":          "http",
