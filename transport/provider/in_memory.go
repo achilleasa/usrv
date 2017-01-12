@@ -98,3 +98,11 @@ func (t *InMemory) Request(msg transport.Message) <-chan transport.ImmutableMess
 
 	return resChan
 }
+
+// InMemoryTransportFactory is a factory for creating usrv transport instances
+// whose concrete implementation is the InMemory transport. This function behaves
+// exactly the same as NewInMemory() but returns back a Transport interface allowing
+// it to be used as usrv.DefaultTransportFactory.
+func InMemoryTransportFactory() transport.Transport {
+	return NewInMemory()
+}

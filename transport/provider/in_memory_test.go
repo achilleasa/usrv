@@ -54,7 +54,7 @@ func TestInMemoryErrors(t *testing.T) {
 }
 
 func TestRPC(t *testing.T) {
-	tr := NewInMemory()
+	tr := InMemoryTransportFactory()
 	defer tr.Close()
 
 	expHeaders := map[string]string{

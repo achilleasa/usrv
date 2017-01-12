@@ -580,7 +580,7 @@ func TestHTTPClientReconfiguration(t *testing.T) {
 		"tls/key":           keyFile,
 	})
 
-	trServer := NewHTTP()
+	trServer := HTTPTransportFactory()
 	trClient := NewHTTP()
 	trClient.URLBuilder = newDefaultURLBuilder()
 	defer trServer.Close()
