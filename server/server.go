@@ -268,6 +268,11 @@ func (s *Server) generateHandler(ep *Endpoint) transport.Handler {
 		}
 	}
 
+	// Apply global middleware in reverse order
+	for index := len(globalMiddleware) - 1; index >= 0; index-- {
+		middlewareChain = globalMiddleware[index](middlewareChain)
+	}
+
 	// Return a compatible transport handler
 	return transport.HandlerFunc(func(req transport.ImmutableMessage, res transport.Message) {
 		if s.panicHandler != nil {
