@@ -30,7 +30,7 @@ type GenericMessage struct {
 	ErrField              error
 }
 
-// Returns a UUID for this message.
+// ID returns a UUID for this message.
 func (m *GenericMessage) ID() string {
 	return m.IDField
 }
