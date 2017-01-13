@@ -115,6 +115,24 @@ func TestEndpointHandler(t *testing.T) {
 		Greeting string `json:"greeting"`
 	}
 
+	ClearGlobalMiddleware()
+	RegisterGlobalMiddleware(
+		func(next Middleware) Middleware {
+			return MiddlewareFunc(func(ctx context.Context, req transport.ImmutableMessage, res transport.Message) {
+				log = append(log, "enter global middleware 1")
+				next.Handle(ctx, req, res)
+				log = append(log, "exit global middleware 1")
+			})
+		},
+		func(next Middleware) Middleware {
+			return MiddlewareFunc(func(ctx context.Context, req transport.ImmutableMessage, res transport.Message) {
+				log = append(log, "enter global middleware 2")
+				next.Handle(ctx, req, res)
+				log = append(log, "exit global middleware 2")
+			})
+		},
+	)
+
 	invocation := 0
 	expError := "handler error"
 	ep := &Endpoint{
@@ -157,6 +175,8 @@ func TestEndpointHandler(t *testing.T) {
 
 	// Examine log
 	expLog := []string{
+		"enter global middleware 1",
+		"enter global middleware 2",
 		"enter 1",
 		"enter 2",
 		"enter 3",
@@ -164,6 +184,8 @@ func TestEndpointHandler(t *testing.T) {
 		"exit 3",
 		"exit 2",
 		"exit 1",
+		"exit global middleware 2",
+		"exit global middleware 1",
 	}
 	if !reflect.DeepEqual(log, expLog) {
 		t.Fatalf("expected log entries to be:\n%v\n\ngot:\n%v", expLog, log)

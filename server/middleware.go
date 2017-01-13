@@ -41,3 +41,18 @@ type MiddlewareFunc func(ctx context.Context, req transport.ImmutableMessage, re
 func (f MiddlewareFunc) Handle(ctx context.Context, req transport.ImmutableMessage, res transport.Message) {
 	f(ctx, req, res)
 }
+
+var (
+	globalMiddleware = []MiddlewareFactory{}
+)
+
+// RegisterGlobalMiddleware appends one or more MiddlewareFactory to the global
+// set of middleware that is automatically prepended to all defined server endpoints.
+func RegisterGlobalMiddleware(factories ...MiddlewareFactory) {
+	globalMiddleware = append(globalMiddleware, factories...)
+}
+
+// ClearGlobalMiddleware clears the list of global middleware.
+func ClearGlobalMiddleware() {
+	globalMiddleware = []MiddlewareFactory{}
+}
