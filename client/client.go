@@ -107,14 +107,48 @@ func (c *Client) Request(ctx context.Context, endpoint string, reqMessage, resMe
 	req.ReceiverField = c.serviceName
 	req.ReceiverEndpointField = endpoint
 
+	// Execute middleware pre hooks (global first; local after)
+	hasMiddleware := len(globalMiddleware)+len(c.middleware) > 0
+	for _, middleware := range globalMiddleware {
+		updatedCtx := middleware.Pre(ctx, req)
+		if updatedCtx != nil {
+			ctx = updatedCtx
+		}
+	}
+	for _, middleware := range c.middleware {
+		updatedCtx := middleware.Pre(ctx, req)
+		if updatedCtx != nil {
+			ctx = updatedCtx
+		}
+	}
+
 	// Send request and wait for reply or for the context deadline to expire
 	var res transport.ImmutableMessage
 	select {
 	case <-ctx.Done():
-		return transport.ErrTimeout
+		if !hasMiddleware {
+			return transport.ErrTimeout
+		}
+
+		// Create a fake response with an error to pass to the middleware post hooks
+		spoofedRes := transport.MakeGenericMessage()
+		spoofedRes.SenderField = c.serviceName
+		spoofedRes.SenderEndpointField = req.ReceiverEndpointField
+		spoofedRes.ReceiverField = req.SenderField
+		spoofedRes.ReceiverEndpointField = req.SenderEndpointField
+		spoofedRes.ErrField = transport.ErrTimeout
+		res = spoofedRes
 	case res = <-c.transport.Request(req):
 	}
 	defer res.Close()
+
+	// Execute middleware post hooks in reverse order (local first; global after)
+	for index := len(c.middleware) - 1; index >= 0; index-- {
+		c.middleware[index].Post(ctx, req, res)
+	}
+	for index := len(globalMiddleware) - 1; index >= 0; index-- {
+		globalMiddleware[index].Post(ctx, req, res)
+	}
 
 	resData, err := res.Payload()
 	if err != nil {

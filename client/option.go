@@ -25,3 +25,21 @@ func WithCodec(codec encoding.Codec) Option {
 		return nil
 	}
 }
+
+// WithMiddleware configures the client to use a set of client-specific middleware.
+// The set of middleware will be executed after any globally defined middleware.
+func WithMiddleware(middleware ...Middleware) Option {
+	return func(s *Client) error {
+		list := make([]Middleware, 0)
+		for _, m := range middleware {
+			if m == nil {
+				continue
+			}
+			list = append(list, m)
+		}
+
+		s.middleware = append(s.middleware, list...)
+
+		return nil
+	}
+}
