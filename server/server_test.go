@@ -132,12 +132,23 @@ func TestEndpointHandler(t *testing.T) {
 			})
 		},
 	)
+	expSender := "test"
+	expEndpoint := "test endpoint"
 
 	invocation := 0
 	expError := "handler error"
 	ep := &Endpoint{
-		Name: "test",
+		Name: expEndpoint,
 		Handler: func(ctx context.Context, req *request, res *response) error {
+			ctxVal := ctx.Value(CtxFieldServiceName).(string)
+			if ctxVal != expSender {
+				t.Errorf("expected server to inject service %q in req ctx; got %q", expSender, ctxVal)
+			}
+			ctxVal = ctx.Value(CtxFieldEndpointName).(string)
+			if ctxVal != expEndpoint {
+				t.Errorf("expected server to inject endpoint %q in req ctx; got %q", expEndpoint, ctxVal)
+			}
+
 			invocation++
 			switch invocation {
 			case 1:
@@ -155,7 +166,7 @@ func TestEndpointHandler(t *testing.T) {
 		},
 	}
 
-	srv, err := NewServer("test")
+	srv, err := NewServer(expSender)
 	if err != nil {
 		t.Fatal(err)
 	}

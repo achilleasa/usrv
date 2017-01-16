@@ -20,6 +20,14 @@ var (
 	// writes its output when a panic is recovered.
 	DefaultPanicWriter io.Writer = os.Stderr
 
+	// CtxFieldServiceName defines the context field name where the server
+	// stores the service name that responds to an incoming request.
+	CtxFieldServiceName interface{} = "Service"
+
+	// CtxFieldEndpointName defines the context field name where the server
+	// stores the endpoint name that responds to an incoming request.
+	CtxFieldEndpointName interface{} = "Endpoint"
+
 	errServeAlreadyCalled = errors.New("server is already listening for incoming requests")
 )
 
@@ -291,7 +299,13 @@ func (s *Server) generateHandler(ep *Endpoint) transport.Handler {
 				}
 			}()
 		}
-		ctx := context.Background()
+
+		// Setup initial request context and inject the service and endpoint name.
+		ctx := context.WithValue(
+			context.WithValue(context.Background(), CtxFieldServiceName, s.serviceName),
+			CtxFieldEndpointName,
+			ep.Name,
+		)
 		middlewareChain.Handle(ctx, req, res)
 	})
 }

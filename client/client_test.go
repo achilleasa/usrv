@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/achilleasa/usrv/encoding"
+	"github.com/achilleasa/usrv/server"
 	"github.com/achilleasa/usrv/transport"
 	"github.com/achilleasa/usrv/transport/provider"
 )
@@ -20,7 +21,7 @@ func TestClientOptionError(t *testing.T) {
 	}
 }
 
-func TestClient(t *testing.T) {
+func TestClientRequest(t *testing.T) {
 	tr := provider.NewInMemory()
 	defer tr.Close()
 
@@ -74,6 +75,80 @@ func TestClient(t *testing.T) {
 	err = c.Request(ctx, "endpoint", reqObj, resObj)
 	if err != transport.ErrTimeout {
 		t.Fatalf("expected to get error %v; got %v", transport.ErrTimeout, err)
+	}
+}
+
+func TestClientRequestWithServerEndpointCtx(t *testing.T) {
+	tr := provider.NewInMemory()
+	defer tr.Close()
+
+	expSender := "foo service"
+	expEndpoint := "foo endpoint"
+	expReceiver := "service"
+
+	expGreeting := "hello tester"
+	expReqPayload := `{"name":"tester"}`
+	expResPayload := `{"greeting":"` + expGreeting + `"}`
+	tr.Bind(expReceiver, expEndpoint, transport.HandlerFunc(
+		func(req transport.ImmutableMessage, res transport.Message) {
+			payload, _ := req.Payload()
+			payloadStr := string(payload)
+			if payloadStr != expReqPayload {
+				t.Errorf("expected request payload to be:\n%s\n\ngot:\n%s", expReqPayload, payloadStr)
+			}
+
+			if req.Sender() != expSender {
+				t.Errorf("expected sender to be %q; got %q", expSender, req.Sender())
+			}
+			if req.SenderEndpoint() != expEndpoint {
+				t.Errorf("expected sender endpoint to be %q; got %q", expEndpoint, req.SenderEndpoint())
+			}
+
+			if req.Receiver() != expReceiver {
+				t.Errorf("expected receiver to be %q; got %q", expReceiver, req.Receiver())
+			}
+			if req.ReceiverEndpoint() != expEndpoint {
+				t.Errorf("expected receiver endpoint to be %q; got %q", expEndpoint, req.ReceiverEndpoint())
+			}
+
+			res.SetPayload([]byte(expResPayload), nil)
+			<-time.After(100 * time.Millisecond)
+		}),
+	)
+
+	c, err := NewClient(
+		expReceiver,
+		WithTransport(tr),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type request struct {
+		Name string `json:"name"`
+	}
+
+	type response struct {
+		Greeting string `json:"greeting"`
+	}
+
+	reqObj := &request{Name: "tester"}
+	resObj := &response{}
+
+	// Normal request originating from server endpoint handler
+	ctx := context.WithValue(
+		context.WithValue(context.Background(), server.CtxFieldServiceName, expSender),
+		server.CtxFieldEndpointName,
+		expEndpoint,
+	)
+
+	err = c.Request(ctx, expEndpoint, reqObj, resObj)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resObj.Greeting != expGreeting {
+		t.Fatalf(`expected response object "Greeting" field to have value %q; got %q`, expGreeting, resObj.Greeting)
 	}
 }
 
