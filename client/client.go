@@ -5,6 +5,7 @@ import (
 
 	"github.com/achilleasa/usrv"
 	"github.com/achilleasa/usrv/encoding"
+	"github.com/achilleasa/usrv/server"
 	"github.com/achilleasa/usrv/transport"
 )
 
@@ -30,6 +31,10 @@ type Client struct {
 	// A marshaler and unmarshaler instance obtained by the codec.
 	marshaler   encoding.Marshaler
 	unmarshaler encoding.Unmarshaler
+
+	// The set of middleware to be applied by this client. This list of
+	// middleware will be applied after any global client middleware.
+	middleware []Middleware
 }
 
 // NewClient creates a new client instance for the given service name and applies
@@ -37,6 +42,7 @@ type Client struct {
 func NewClient(serviceName string, options ...Option) (*Client, error) {
 	c := &Client{
 		serviceName: serviceName,
+		middleware:  make([]Middleware, 0),
 	}
 
 	// Apply options
@@ -84,6 +90,20 @@ func (c *Client) Request(ctx context.Context, endpoint string, reqMessage, resMe
 	if req.ErrField != nil {
 		return req.ErrField
 	}
+
+	// If this client request is performed from inside a server endpoint handler,
+	// ctx will include the service and endpoint names. If they are present we
+	// set them as the sender service and endpoint.
+	ctxVal := ctx.Value(server.CtxFieldServiceName)
+	if ctxVal != nil {
+		req.SenderField = ctxVal.(string)
+	}
+	ctxVal = ctx.Value(server.CtxFieldEndpointName)
+	if ctxVal != nil {
+		req.SenderEndpointField = ctxVal.(string)
+	}
+
+	// Set remote endpoint service/receiver comobo.
 	req.ReceiverField = c.serviceName
 	req.ReceiverEndpointField = endpoint
 
@@ -94,8 +114,8 @@ func (c *Client) Request(ctx context.Context, endpoint string, reqMessage, resMe
 		return transport.ErrTimeout
 	case res = <-c.transport.Request(req):
 	}
-
 	defer res.Close()
+
 	resData, err := res.Payload()
 	if err != nil {
 		return err
