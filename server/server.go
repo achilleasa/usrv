@@ -272,6 +272,9 @@ func (s *Server) generateHandler(ep *Endpoint) transport.Handler {
 	// order and wrap the generated handler.
 	if ep.Middleware != nil {
 		for index := len(ep.Middleware) - 1; index >= 0; index-- {
+			if ep.Middleware[index] == nil {
+				continue
+			}
 			middlewareChain = ep.Middleware[index](middlewareChain)
 		}
 	}
