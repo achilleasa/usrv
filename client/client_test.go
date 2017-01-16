@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -152,6 +153,119 @@ func TestClientRequestWithServerEndpointCtx(t *testing.T) {
 	}
 }
 
+func TestClientMiddlewareChain(t *testing.T) {
+	origMiddleware := globalMiddleware
+	defer func() {
+		globalMiddleware = origMiddleware
+	}()
+	ClearGlobalMiddleware()
+
+	tr := provider.NewInMemory()
+	defer tr.Close()
+
+	expReceiver := "service"
+	expSender := "other service"
+	expEndpoint := "test"
+	expResPayload := `{"hello":"back"}`
+
+	tr.Bind(expReceiver, expEndpoint, transport.HandlerFunc(
+		func(req transport.ImmutableMessage, res transport.Message) {
+			res.SetPayload([]byte(expResPayload), nil)
+			<-time.After(100 * time.Millisecond)
+		}),
+	)
+
+	logChan := make(chan string, 8)
+
+	// Should be no-op
+	RegisterGlobalMiddleware(nil)
+
+	RegisterGlobalMiddleware(
+		nil, // invalid middleware; should be filtered out
+		&testMiddleware{
+			name:         "global middleware 0",
+			logChan:      logChan,
+			returnNilCtx: false,
+		},
+	)
+	RegisterGlobalMiddleware(
+		&testMiddleware{
+			name:         "global middleware 1",
+			logChan:      logChan,
+			returnNilCtx: true,
+		},
+	)
+
+	c, err := NewClient(
+		expReceiver,
+		WithTransport(tr),
+		WithMiddleware(
+			&testMiddleware{
+				name:    "local middleware 0",
+				logChan: logChan,
+			},
+			nil, // invalid middleware; should be filtered out
+		),
+		WithMiddleware(nil), // invalid middlware list; should be ignored
+		WithMiddleware(
+			&testMiddleware{
+				name:         "local middleware 1",
+				logChan:      logChan,
+				returnNilCtx: true,
+			},
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqObj := map[string]string{}
+	resObj := map[string]string{}
+
+	// Normal request originating from server endpoint handler
+	ctx := context.WithValue(
+		context.WithValue(context.Background(), server.CtxFieldServiceName, expSender),
+		server.CtxFieldEndpointName,
+		expEndpoint,
+	)
+
+	err = c.Request(ctx, expEndpoint, &reqObj, &resObj)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expLog := []string{
+		"pre global middleware 0",
+		"pre global middleware 1",
+		"pre local middleware 0",
+		"pre local middleware 1",
+		"post local middleware 1",
+		"post local middleware 0",
+		"post global middleware 1",
+		"post global middleware 0",
+	}
+	for index, expEntry := range expLog {
+		entry := <-logChan
+		if entry != expEntry {
+			t.Fatalf("[entry %d] expected log entry to be %q; got %q", index, expEntry, entry)
+		}
+	}
+
+	// Client-side timeout; middleware should still be executed
+	ctx, _ = context.WithTimeout(ctx, 1*time.Millisecond)
+	err = c.Request(ctx, expEndpoint, reqObj, resObj)
+	if err != transport.ErrTimeout {
+		t.Fatalf("expected to get error %v; got %v", transport.ErrTimeout, err)
+	}
+
+	for index, expEntry := range expLog {
+		entry := <-logChan
+		if entry != expEntry {
+			t.Fatalf("[entry %d] expected log entry to be %q; got %q", index, expEntry, entry)
+		}
+	}
+}
+
 func TestClientErrors(t *testing.T) {
 	tr := provider.NewInMemory()
 	defer tr.Close()
@@ -243,5 +357,34 @@ func nopCodec() *testCodec {
 		unmarshalerFn: func(_ []byte, _ interface{}) error {
 			return nil
 		},
+	}
+}
+
+type testMiddleware struct {
+	name         string
+	logChan      chan string
+	returnNilCtx bool
+}
+
+func (m *testMiddleware) Pre(ctx context.Context, req transport.Message) context.Context {
+	m.logChan <- "pre " + m.name
+	var ctxKey interface{} = "ctx-" + m.name
+	ctx = context.WithValue(ctx, ctxKey, m.name)
+	if m.returnNilCtx {
+		return nil
+	}
+	return ctx
+}
+
+func (m *testMiddleware) Post(ctx context.Context, req, res transport.ImmutableMessage) {
+	m.logChan <- "post " + m.name
+	if m.returnNilCtx {
+		return
+	}
+
+	var ctxKey interface{} = "ctx-" + m.name
+	ctxVal := ctx.Value(ctxKey).(string)
+	if ctxVal != m.name {
+		panic(fmt.Errorf(`expected ctx value "ctx-%s" to be %q; got %q`, m.name, m.name, ctxVal))
 	}
 }
