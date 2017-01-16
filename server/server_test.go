@@ -117,6 +117,7 @@ func TestEndpointHandler(t *testing.T) {
 
 	ClearGlobalMiddleware()
 	RegisterGlobalMiddleware(
+		nil,
 		func(next Middleware) Middleware {
 			return MiddlewareFunc(func(ctx context.Context, req transport.ImmutableMessage, res transport.Message) {
 				log = append(log, "enter global middleware 1")
@@ -161,6 +162,7 @@ func TestEndpointHandler(t *testing.T) {
 		},
 		Middleware: []MiddlewareFactory{
 			genMiddleware("1"),
+			nil,
 			genMiddleware("2"),
 			genMiddleware("3"),
 		},

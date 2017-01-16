@@ -49,7 +49,12 @@ var (
 // RegisterGlobalMiddleware appends one or more MiddlewareFactory to the global
 // set of middleware that is automatically prepended to all defined server endpoints.
 func RegisterGlobalMiddleware(factories ...MiddlewareFactory) {
-	globalMiddleware = append(globalMiddleware, factories...)
+	for _, factory := range factories {
+		if factory == nil {
+			continue
+		}
+		globalMiddleware = append(globalMiddleware, factory)
+	}
 }
 
 // ClearGlobalMiddleware clears the list of global middleware.
