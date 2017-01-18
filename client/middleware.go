@@ -6,6 +6,9 @@ import (
 	"github.com/achilleasa/usrv/transport"
 )
 
+// A MiddlewareFactory generates a Middleware instances.
+type MiddlewareFactory func() Middleware
+
 // Middleware is an interface implemented by objects that can be injected into
 // a client's outgoing request flow.
 //
@@ -25,21 +28,21 @@ type Middleware interface {
 }
 
 var (
-	globalMiddleware = []Middleware{}
+	globalMiddleware = []MiddlewareFactory{}
 )
 
 // RegisterGlobalMiddleware appends one or more MiddlewareFactory to the global
 // set of middleware that is automatically executed by all RPC clients
-func RegisterGlobalMiddleware(middleware ...Middleware) {
-	for _, m := range middleware {
-		if m == nil {
+func RegisterGlobalMiddleware(factories ...MiddlewareFactory) {
+	for _, factory := range factories {
+		if factory == nil {
 			continue
 		}
-		globalMiddleware = append(globalMiddleware, m)
+		globalMiddleware = append(globalMiddleware, factory)
 	}
 }
 
 // ClearGlobalMiddleware clears the list of global middleware.
 func ClearGlobalMiddleware() {
-	globalMiddleware = []Middleware{}
+	globalMiddleware = []MiddlewareFactory{}
 }

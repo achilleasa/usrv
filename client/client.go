@@ -42,7 +42,11 @@ type Client struct {
 func New(serviceName string, options ...Option) (*Client, error) {
 	c := &Client{
 		serviceName: serviceName,
-		middleware:  make([]Middleware, 0),
+	}
+
+	// Create middleware instances using the global middleware factories
+	for _, factory := range globalMiddleware {
+		c.middleware = append(c.middleware, factory())
 	}
 
 	// Apply options
@@ -107,14 +111,8 @@ func (c *Client) Request(ctx context.Context, endpoint string, reqMessage, resMe
 	req.ReceiverField = c.serviceName
 	req.ReceiverEndpointField = endpoint
 
-	// Execute middleware pre hooks (global first; local after)
-	hasMiddleware := len(globalMiddleware)+len(c.middleware) > 0
-	for _, middleware := range globalMiddleware {
-		updatedCtx := middleware.Pre(ctx, req)
-		if updatedCtx != nil {
-			ctx = updatedCtx
-		}
-	}
+	// Execute middleware pre hooks
+	hasMiddleware := len(c.middleware) > 0
 	for _, middleware := range c.middleware {
 		updatedCtx := middleware.Pre(ctx, req)
 		if updatedCtx != nil {
@@ -142,12 +140,9 @@ func (c *Client) Request(ctx context.Context, endpoint string, reqMessage, resMe
 	}
 	defer res.Close()
 
-	// Execute middleware post hooks in reverse order (local first; global after)
+	// Execute middleware post hooks in reverse order
 	for index := len(c.middleware) - 1; index >= 0; index-- {
 		c.middleware[index].Post(ctx, req, res)
-	}
-	for index := len(globalMiddleware) - 1; index >= 0; index-- {
-		globalMiddleware[index].Post(ctx, req, res)
 	}
 
 	resData, err := res.Payload()
