@@ -16,7 +16,7 @@ import (
 
 func TestClientOptionError(t *testing.T) {
 	expError := errors.New("option error")
-	_, err := NewClient("foo", func(_ *Client) error { return expError })
+	_, err := New("foo", func(_ *Client) error { return expError })
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
 	}
@@ -42,7 +42,7 @@ func TestClientRequest(t *testing.T) {
 		}),
 	)
 
-	c, err := NewClient(
+	c, err := New(
 		"service",
 		WithTransport(tr),
 	)
@@ -117,7 +117,7 @@ func TestClientRequestWithServerEndpointCtx(t *testing.T) {
 		}),
 	)
 
-	c, err := NewClient(
+	c, err := New(
 		expReceiver,
 		WithTransport(tr),
 	)
@@ -196,7 +196,7 @@ func TestClientMiddlewareChain(t *testing.T) {
 		},
 	)
 
-	c, err := NewClient(
+	c, err := New(
 		expReceiver,
 		WithTransport(tr),
 		WithMiddleware(
@@ -292,7 +292,7 @@ func TestClientErrors(t *testing.T) {
 		},
 	}
 
-	c, err := NewClient(
+	c, err := New(
 		"service",
 		WithCodec(codec),
 	)

@@ -73,9 +73,9 @@ type Server struct {
 	doneChan chan struct{}
 }
 
-// NewServer creates a new server instance for the given service name and applies
+// New creates a new server instance for the given service name and applies
 // any supplied server options.
-func NewServer(serviceName string, options ...Option) (*Server, error) {
+func New(serviceName string, options ...Option) (*Server, error) {
 	srv := &Server{
 		serviceName: serviceName,
 		endpoints:   make([]*Endpoint, 0),
