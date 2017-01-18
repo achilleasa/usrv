@@ -182,37 +182,22 @@ func TestClientMiddlewareChain(t *testing.T) {
 
 	RegisterGlobalMiddleware(
 		nil, // invalid middleware; should be filtered out
-		&testMiddleware{
-			name:         "global middleware 0",
-			logChan:      logChan,
-			returnNilCtx: false,
-		},
+		testMiddlewareFactory("global middleware 0", logChan, false),
 	)
 	RegisterGlobalMiddleware(
-		&testMiddleware{
-			name:         "global middleware 1",
-			logChan:      logChan,
-			returnNilCtx: true,
-		},
+		testMiddlewareFactory("global middleware 1", logChan, true),
 	)
 
 	c, err := New(
 		expReceiver,
 		WithTransport(tr),
 		WithMiddleware(
-			&testMiddleware{
-				name:    "local middleware 0",
-				logChan: logChan,
-			},
+			testMiddlewareFactory("local middleware 0", logChan, false),
 			nil, // invalid middleware; should be filtered out
 		),
 		WithMiddleware(nil), // invalid middlware list; should be ignored
 		WithMiddleware(
-			&testMiddleware{
-				name:         "local middleware 1",
-				logChan:      logChan,
-				returnNilCtx: true,
-			},
+			testMiddlewareFactory("local middleware 1", logChan, true),
 		),
 	)
 	if err != nil {
@@ -364,6 +349,16 @@ type testMiddleware struct {
 	name         string
 	logChan      chan string
 	returnNilCtx bool
+}
+
+func testMiddlewareFactory(name string, logChan chan string, returnNilCtx bool) MiddlewareFactory {
+	return func() Middleware {
+		return &testMiddleware{
+			name:         name,
+			logChan:      logChan,
+			returnNilCtx: returnNilCtx,
+		}
+	}
 }
 
 func (m *testMiddleware) Pre(ctx context.Context, req transport.Message) context.Context {
