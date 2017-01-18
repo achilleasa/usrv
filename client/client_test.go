@@ -182,22 +182,22 @@ func TestClientMiddlewareChain(t *testing.T) {
 
 	RegisterGlobalMiddleware(
 		nil, // invalid middleware; should be filtered out
-		testMiddlewareFactory("global middleware 0", logChan, false),
+		testMiddlewareFactory("global middleware 0", logChan, false, nil),
 	)
 	RegisterGlobalMiddleware(
-		testMiddlewareFactory("global middleware 1", logChan, true),
+		testMiddlewareFactory("global middleware 1", logChan, true, nil),
 	)
 
 	c, err := New(
 		expReceiver,
 		WithTransport(tr),
 		WithMiddleware(
-			testMiddlewareFactory("local middleware 0", logChan, false),
+			testMiddlewareFactory("local middleware 0", logChan, false, nil),
 			nil, // invalid middleware; should be filtered out
 		),
 		WithMiddleware(nil), // invalid middlware list; should be ignored
 		WithMiddleware(
-			testMiddlewareFactory("local middleware 1", logChan, true),
+			testMiddlewareFactory("local middleware 1", logChan, true, nil),
 		),
 	)
 	if err != nil {
@@ -243,6 +243,46 @@ func TestClientMiddlewareChain(t *testing.T) {
 		t.Fatalf("expected to get error %v; got %v", transport.ErrTimeout, err)
 	}
 
+	for index, expEntry := range expLog {
+		entry := <-logChan
+		if entry != expEntry {
+			t.Fatalf("[entry %d] expected log entry to be %q; got %q", index, expEntry, entry)
+		}
+	}
+}
+
+func TestClientMiddlewareThatAbortsRequestExecution(t *testing.T) {
+	tr := provider.NewInMemory()
+	defer tr.Close()
+
+	logChan := make(chan string, 8)
+
+	c, err := New(
+		"client",
+		WithTransport(tr),
+		WithMiddleware(
+			testMiddlewareFactory("local middleware 0", logChan, false, nil),
+			testMiddlewareFactory("local middleware 1", logChan, false, transport.ErrNotAuthorized),
+			testMiddlewareFactory("local middleware 2", logChan, true, nil),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqObj := map[string]string{}
+	resObj := map[string]string{}
+
+	err = c.Request(nil, "foo", &reqObj, &resObj)
+	if err == nil || err != transport.ErrNotAuthorized {
+		t.Fatalf("expected to get error %v; got %v", transport.ErrNotAuthorized, err)
+	}
+
+	expLog := []string{
+		"pre local middleware 0",
+		"pre local middleware 1",
+		"post local middleware 0",
+	}
 	for index, expEntry := range expLog {
 		entry := <-logChan
 		if entry != expEntry {
@@ -349,26 +389,28 @@ type testMiddleware struct {
 	name         string
 	logChan      chan string
 	returnNilCtx bool
+	returnErr    error
 }
 
-func testMiddlewareFactory(name string, logChan chan string, returnNilCtx bool) MiddlewareFactory {
+func testMiddlewareFactory(name string, logChan chan string, returnNilCtx bool, returnErr error) MiddlewareFactory {
 	return func() Middleware {
 		return &testMiddleware{
 			name:         name,
 			logChan:      logChan,
 			returnNilCtx: returnNilCtx,
+			returnErr:    returnErr,
 		}
 	}
 }
 
-func (m *testMiddleware) Pre(ctx context.Context, req transport.Message) context.Context {
+func (m *testMiddleware) Pre(ctx context.Context, req transport.Message) (context.Context, error) {
 	m.logChan <- "pre " + m.name
 	var ctxKey interface{} = "ctx-" + m.name
 	ctx = context.WithValue(ctx, ctxKey, m.name)
 	if m.returnNilCtx {
-		return nil
+		return nil, m.returnErr
 	}
-	return ctx
+	return ctx, m.returnErr
 }
 
 func (m *testMiddleware) Post(ctx context.Context, req, res transport.ImmutableMessage) {

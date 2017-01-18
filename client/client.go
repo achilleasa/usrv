@@ -86,6 +86,10 @@ func (c *Client) setDefaults() {
 // error. It is important to note that a request that times out on the client
 // side may still be executed by the remote endpoint.
 func (c *Client) Request(ctx context.Context, endpoint string, reqMessage, resMessage interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	req := transport.MakeGenericMessage()
 	defer req.Close()
 
@@ -112,36 +116,50 @@ func (c *Client) Request(ctx context.Context, endpoint string, reqMessage, resMe
 	req.ReceiverEndpointField = endpoint
 
 	// Execute middleware pre hooks
-	hasMiddleware := len(c.middleware) > 0
+	var (
+		err                 error
+		updatedCtx          context.Context
+		lastMiddlewareIndex = -1
+	)
 	for _, middleware := range c.middleware {
-		updatedCtx := middleware.Pre(ctx, req)
+		updatedCtx, err = middleware.Pre(ctx, req)
 		if updatedCtx != nil {
 			ctx = updatedCtx
 		}
+
+		if err != nil {
+			break
+		}
+
+		lastMiddlewareIndex++
 	}
 
 	// Send request and wait for reply or for the context deadline to expire
 	var res transport.ImmutableMessage
 	select {
 	case <-ctx.Done():
-		if !hasMiddleware {
-			return transport.ErrTimeout
+		err = transport.ErrTimeout
+		if len(c.middleware) == 0 {
+			return err
 		}
+	case res = <-c.transport.Request(req):
+	}
 
-		// Create a fake response with an error to pass to the middleware post hooks
+	if err != nil {
+		// Create a fake response with the error to pass to the middleware post hooks
 		spoofedRes := transport.MakeGenericMessage()
 		spoofedRes.SenderField = c.serviceName
 		spoofedRes.SenderEndpointField = req.ReceiverEndpointField
 		spoofedRes.ReceiverField = req.SenderField
 		spoofedRes.ReceiverEndpointField = req.SenderEndpointField
-		spoofedRes.ErrField = transport.ErrTimeout
+		spoofedRes.ErrField = err
 		res = spoofedRes
-	case res = <-c.transport.Request(req):
 	}
+
 	defer res.Close()
 
 	// Execute middleware post hooks in reverse order
-	for index := len(c.middleware) - 1; index >= 0; index-- {
+	for index := lastMiddlewareIndex; index >= 0; index-- {
 		c.middleware[index].Post(ctx, req, res)
 	}
 
