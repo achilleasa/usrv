@@ -14,7 +14,10 @@ type MiddlewareFactory func() Middleware
 //
 // Pre is invoked before passing the request message to the transport. Calls to
 // Pre may modify the outgoing request or the request context. In the latter case
-// the updated context must be returned back from the call to Pre.
+// the updated context must be returned back from the call to Pre. If the call
+// to Pre returns an error then the client will abort the request, execute
+// Post hooks for middleware that has been already invoked and return the error
+// back to the caller.
 //
 // Post is invoked after receiving a response from the remote endpoint.
 //
@@ -23,7 +26,7 @@ type MiddlewareFactory func() Middleware
 // message or modify the response message after or concurrently with the completion
 // of the middleware handler.
 type Middleware interface {
-	Pre(ctx context.Context, req transport.Message) context.Context
+	Pre(ctx context.Context, req transport.Message) (context.Context, error)
 	Post(ctx context.Context, req, res transport.ImmutableMessage)
 }
 
