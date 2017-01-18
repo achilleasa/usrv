@@ -37,9 +37,9 @@ type Client struct {
 	middleware []Middleware
 }
 
-// NewClient creates a new client instance for the given service name and applies
+// New creates a new client instance for the given service name and applies
 // any supplied client options.
-func NewClient(serviceName string, options ...Option) (*Client, error) {
+func New(serviceName string, options ...Option) (*Client, error) {
 	c := &Client{
 		serviceName: serviceName,
 		middleware:  make([]Middleware, 0),

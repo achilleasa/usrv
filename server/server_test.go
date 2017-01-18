@@ -21,7 +21,7 @@ func TestOptionsThatReturnErrors(t *testing.T) {
 	expError := errors.New("option error")
 	opt := func(_ *Server) error { return expError }
 
-	_, err := NewServer("foo", opt)
+	_, err := New("foo", opt)
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
 	}
@@ -73,7 +73,7 @@ func TestEndpointValidation(t *testing.T) {
 		},
 	}
 
-	srv, err := NewServer("test")
+	srv, err := New("test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestEndpointHandler(t *testing.T) {
 		},
 	}
 
-	srv, err := NewServer(expSender)
+	srv, err := New(expSender)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestMarshalingErrorHandling(t *testing.T) {
 	}
 
 	codec := nopCodec()
-	srv, err := NewServer(
+	srv, err := New(
 		"test",
 		WithCodec(codec),
 	)
@@ -312,7 +312,7 @@ func TestPanicHandling(t *testing.T) {
 		}
 	}
 
-	srv, err := NewServer(
+	srv, err := New(
 		"test",
 		WithCodec(nopCodec()),
 		WithPanicHandler(panicHandler),
@@ -368,7 +368,7 @@ func TestServer(t *testing.T) {
 		Greeting string `json:"greeting"`
 	}
 
-	srv, err := NewServer(
+	srv, err := New(
 		"test",
 		WithTransport(provider.NewInMemory()),
 	)
@@ -441,7 +441,7 @@ func TestListenErrors(t *testing.T) {
 	type response struct {
 	}
 
-	srv, err := NewServer(
+	srv, err := New(
 		"test",
 		WithTransport(provider.NewInMemory()),
 	)
