@@ -6,12 +6,12 @@ import (
 	"github.com/achilleasa/usrv/config/store"
 )
 
-// Float32Flag provides a thread-safe flag wrapping an int32 value. Its value can be
+// Float32 provides a thread-safe flag wrapping an int32 value. Its value can be
 // dynamically updated via a watched configuration key or manually set using its
 // Set method.
 //
 // The flag also provides a mechanism for listening for changes.
-type Float32Flag struct {
+type Float32 struct {
 	flagImpl
 }
 
@@ -23,26 +23,26 @@ type Float32Flag struct {
 // to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewFloat32(store *store.Store, cfgPath string) *Float32Flag {
-	f := &Float32Flag{}
+func NewFloat32(store *store.Store, cfgPath string) *Float32 {
+	f := &Float32{}
 	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
 // Get the stored flag value. If no initial value has been set for this flag,
 // this method will block.
-func (f *Float32Flag) Get() float32 {
+func (f *Float32) Get() float32 {
 	return f.get().(float32)
 }
 
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
-func (f *Float32Flag) Set(val float32) {
+func (f *Float32) Set(val float32) {
 	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.
-func (f *Float32Flag) mapCfgValue(cfg map[string]string) (interface{}, error) {
+func (f *Float32) mapCfgValue(cfg map[string]string) (interface{}, error) {
 	v, err := strconv.ParseFloat(firstMapElement(cfg), 32)
 	if err != nil {
 		return nil, err
@@ -50,12 +50,12 @@ func (f *Float32Flag) mapCfgValue(cfg map[string]string) (interface{}, error) {
 	return float32(v), nil
 }
 
-// Float64Flag provides a thread-safe flag wrapping an float64 value. Its value can be
+// Float64 provides a thread-safe flag wrapping an float64 value. Its value can be
 // dynamically updated via a watched configuration key or manually set using its
 // Set method.
 //
 // The flag also provides a mechanism for listening for changes.
-type Float64Flag struct {
+type Float64 struct {
 	flagImpl
 }
 
@@ -67,25 +67,25 @@ type Float64Flag struct {
 // to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewFloat64(store *store.Store, cfgPath string) *Float64Flag {
-	f := &Float64Flag{}
+func NewFloat64(store *store.Store, cfgPath string) *Float64 {
+	f := &Float64{}
 	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
 // Get the stored flag value. If no initial value has been set for this flag,
 // this method will block.
-func (f *Float64Flag) Get() float64 {
+func (f *Float64) Get() float64 {
 	return f.get().(float64)
 }
 
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
-func (f *Float64Flag) Set(val float64) {
+func (f *Float64) Set(val float64) {
 	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.
-func (f *Float64Flag) mapCfgValue(cfg map[string]string) (interface{}, error) {
+func (f *Float64) mapCfgValue(cfg map[string]string) (interface{}, error) {
 	return strconv.ParseFloat(firstMapElement(cfg), 64)
 }

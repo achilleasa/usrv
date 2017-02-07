@@ -320,7 +320,7 @@ func defaultPanicHandler(err error) {
 	runtime.Stack(stackBuf, false)
 
 	msg := fmt.Sprintf(
-		"Recovered from panic: %v\n\nStacktrace:\n%v\n",
+		"recovered from panic: %v\n\nstacktrace:\n%v\n",
 		err,
 		string(stackBuf),
 	)
