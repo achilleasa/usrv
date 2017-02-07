@@ -353,7 +353,7 @@ func TestDefaultPanicHandler(t *testing.T) {
 	expError := errors.New("some error")
 	defaultPanicHandler(expError)
 
-	expPrefix := fmt.Sprintf("Recovered from panic: %v", expError)
+	expPrefix := fmt.Sprintf("recovered from panic: %v", expError)
 	if !strings.HasPrefix(buf.String(), expPrefix) {
 		t.Fatalf("expected panic handler output to contain %q", expPrefix)
 	}

@@ -76,7 +76,7 @@ type ServiceURLBuilder interface {
 }
 
 type defaultURLBuilder struct {
-	config *flag.MapFlag
+	config *flag.Map
 }
 
 func newDefaultURLBuilder() *defaultURLBuilder {
@@ -192,13 +192,13 @@ type HTTP struct {
 	serverDoneChan chan struct{}
 
 	// Config options.
-	config        *flag.MapFlag
-	protocol      *flag.StringFlag
-	port          *flag.Uint32Flag
-	tlsCert       *flag.StringFlag
-	tlsKey        *flag.StringFlag
-	tlsStrictMode *flag.BoolFlag
-	tlsVerify     *flag.StringFlag
+	config        *flag.Map
+	protocol      *flag.String
+	port          *flag.Uint32
+	tlsCert       *flag.String
+	tlsKey        *flag.String
+	tlsStrictMode *flag.Bool
+	tlsVerify     *flag.String
 
 	// The listener for http requests.
 	listener net.Listener

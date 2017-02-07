@@ -6,12 +6,12 @@ import (
 	"github.com/achilleasa/usrv/config/store"
 )
 
-// Uint32Flag provides a thread-safe flag wrapping an int32 value. Its value can be
+// Uint32 provides a thread-safe flag wrapping an int32 value. Its value can be
 // dynamically updated via a watched configuration key or manually set using its
 // Set method.
 //
 // The flag also provides a mechanism for listening for changes.
-type Uint32Flag struct {
+type Uint32 struct {
 	flagImpl
 }
 
@@ -23,26 +23,26 @@ type Uint32Flag struct {
 // to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewUint32(store *store.Store, cfgPath string) *Uint32Flag {
-	f := &Uint32Flag{}
+func NewUint32(store *store.Store, cfgPath string) *Uint32 {
+	f := &Uint32{}
 	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
 // Get the stored flag value. If no initial value has been set for this flag,
 // this method will block.
-func (f *Uint32Flag) Get() uint32 {
+func (f *Uint32) Get() uint32 {
 	return f.get().(uint32)
 }
 
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
-func (f *Uint32Flag) Set(val uint32) {
+func (f *Uint32) Set(val uint32) {
 	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.
-func (f *Uint32Flag) mapCfgValue(cfg map[string]string) (interface{}, error) {
+func (f *Uint32) mapCfgValue(cfg map[string]string) (interface{}, error) {
 	v, err := strconv.ParseUint(firstMapElement(cfg), 10, 32)
 	if err != nil {
 		return nil, err
@@ -50,12 +50,12 @@ func (f *Uint32Flag) mapCfgValue(cfg map[string]string) (interface{}, error) {
 	return uint32(v), nil
 }
 
-// Int32Flag provides a thread-safe flag wrapping an int32 value. Its value can be
+// Int32 provides a thread-safe flag wrapping an int32 value. Its value can be
 // dynamically updated via a watched configuration key or manually set using its
 // Set method.
 //
 // The flag also provides a mechanism for listening for changes.
-type Int32Flag struct {
+type Int32 struct {
 	flagImpl
 }
 
@@ -67,26 +67,26 @@ type Int32Flag struct {
 // to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewInt32(store *store.Store, cfgPath string) *Int32Flag {
-	f := &Int32Flag{}
+func NewInt32(store *store.Store, cfgPath string) *Int32 {
+	f := &Int32{}
 	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
 // Get the stored flag value. If no initial value has been set for this flag,
 // this method will block.
-func (f *Int32Flag) Get() int32 {
+func (f *Int32) Get() int32 {
 	return f.get().(int32)
 }
 
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
-func (f *Int32Flag) Set(val int32) {
+func (f *Int32) Set(val int32) {
 	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.
-func (f *Int32Flag) mapCfgValue(cfg map[string]string) (interface{}, error) {
+func (f *Int32) mapCfgValue(cfg map[string]string) (interface{}, error) {
 	v, err := strconv.ParseInt(firstMapElement(cfg), 10, 32)
 	if err != nil {
 		return nil, err
@@ -94,12 +94,12 @@ func (f *Int32Flag) mapCfgValue(cfg map[string]string) (interface{}, error) {
 	return int32(v), nil
 }
 
-// Int64Flag provides a thread-safe flag wrapping an int64 value. Its value can be
+// Int64 provides a thread-safe flag wrapping an int64 value. Its value can be
 // dynamically updated via a watched configuration key or manually set using its
 // Set method.
 //
 // The flag also provides a mechanism for listening for changes.
-type Int64Flag struct {
+type Int64 struct {
 	flagImpl
 }
 
@@ -111,35 +111,35 @@ type Int64Flag struct {
 // to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewInt64(store *store.Store, cfgPath string) *Int64Flag {
-	f := &Int64Flag{}
+func NewInt64(store *store.Store, cfgPath string) *Int64 {
+	f := &Int64{}
 	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
 // Get the stored flag value. If no initial value has been set for this flag,
 // this method will block.
-func (f *Int64Flag) Get() int64 {
+func (f *Int64) Get() int64 {
 	return f.get().(int64)
 }
 
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
-func (f *Int64Flag) Set(val int64) {
+func (f *Int64) Set(val int64) {
 	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.
-func (f *Int64Flag) mapCfgValue(cfg map[string]string) (interface{}, error) {
+func (f *Int64) mapCfgValue(cfg map[string]string) (interface{}, error) {
 	return strconv.ParseInt(firstMapElement(cfg), 10, 64)
 }
 
-// Uint64Flag provides a thread-safe flag wrapping an uint64 value. Its value can be
+// Uint64 provides a thread-safe flag wrapping an uint64 value. Its value can be
 // dynamically updated via a watched configuration key or manually set using its
 // Set method.
 //
 // The flag also provides a mechanism for listening for changes.
-type Uint64Flag struct {
+type Uint64 struct {
 	flagImpl
 }
 
@@ -151,25 +151,25 @@ type Uint64Flag struct {
 // to panic.
 //
 // Dynamic updates can be disabled by invoking the CancelDynamicUpdates method.
-func NewUint64(store *store.Store, cfgPath string) *Uint64Flag {
-	f := &Uint64Flag{}
+func NewUint64(store *store.Store, cfgPath string) *Uint64 {
+	f := &Uint64{}
 	f.init(store, f.mapCfgValue, cfgPath)
 	return f
 }
 
 // Get the stored flag value. If no initial value has been set for this flag,
 // this method will block.
-func (f *Uint64Flag) Get() uint64 {
+func (f *Uint64) Get() uint64 {
 	return f.get().(uint64)
 }
 
 // Set the stored flag value. Calling Set will also trigger a change event to
 // be emitted.
-func (f *Uint64Flag) Set(val uint64) {
+func (f *Uint64) Set(val uint64) {
 	f.set(-1, val, false)
 }
 
 // mapCfgValue validates and converts a dynamic config value into the expected type for this flag.
-func (f *Uint64Flag) mapCfgValue(cfg map[string]string) (interface{}, error) {
+func (f *Uint64) mapCfgValue(cfg map[string]string) (interface{}, error) {
 	return strconv.ParseUint(firstMapElement(cfg), 10, 64)
 }

@@ -7,7 +7,7 @@ import "github.com/achilleasa/usrv/config/flag"
 // when the store value changes.
 //
 // For more information see the documentation for flag.NewBool
-func BoolFlag(cfgPath string) *flag.BoolFlag {
+func BoolFlag(cfgPath string) *flag.Bool {
 	return flag.NewBool(&Store, cfgPath)
 }
 
@@ -16,7 +16,7 @@ func BoolFlag(cfgPath string) *flag.BoolFlag {
 // when the store value changes.
 //
 // For more information see the documentation for flag.NewFloat32
-func Float32Flag(cfgPath string) *flag.Float32Flag {
+func Float32Flag(cfgPath string) *flag.Float32 {
 	return flag.NewFloat32(&Store, cfgPath)
 }
 
@@ -25,7 +25,7 @@ func Float32Flag(cfgPath string) *flag.Float32Flag {
 // when the store value changes.
 //
 // For more information see the documentation for flag.NewFloat64
-func Float64Flag(cfgPath string) *flag.Float64Flag {
+func Float64Flag(cfgPath string) *flag.Float64 {
 	return flag.NewFloat64(&Store, cfgPath)
 }
 
@@ -34,7 +34,7 @@ func Float64Flag(cfgPath string) *flag.Float64Flag {
 // when the store value changes.
 //
 // For more information see the documentation for flag.NewUint32
-func Uint32Flag(cfgPath string) *flag.Uint32Flag {
+func Uint32Flag(cfgPath string) *flag.Uint32 {
 	return flag.NewUint32(&Store, cfgPath)
 }
 
@@ -43,7 +43,7 @@ func Uint32Flag(cfgPath string) *flag.Uint32Flag {
 // when the store value changes.
 //
 // For more information see the documentation for flag.NewUint64
-func Uint64Flag(cfgPath string) *flag.Uint64Flag {
+func Uint64Flag(cfgPath string) *flag.Uint64 {
 	return flag.NewUint64(&Store, cfgPath)
 }
 
@@ -52,7 +52,7 @@ func Uint64Flag(cfgPath string) *flag.Uint64Flag {
 // when the store value changes.
 //
 // For more information see the documentation for flag.NewInt32
-func Int32Flag(cfgPath string) *flag.Int32Flag {
+func Int32Flag(cfgPath string) *flag.Int32 {
 	return flag.NewInt32(&Store, cfgPath)
 }
 
@@ -61,7 +61,7 @@ func Int32Flag(cfgPath string) *flag.Int32Flag {
 // when the store value changes.
 //
 // For more information see the documentation for flag.NewInt64
-func Int64Flag(cfgPath string) *flag.Int64Flag {
+func Int64Flag(cfgPath string) *flag.Int64 {
 	return flag.NewInt64(&Store, cfgPath)
 }
 
@@ -70,7 +70,7 @@ func Int64Flag(cfgPath string) *flag.Int64Flag {
 // when the store value changes.
 //
 // For more information see the documentation for flag.NewString
-func StringFlag(cfgPath string) *flag.StringFlag {
+func StringFlag(cfgPath string) *flag.String {
 	return flag.NewString(&Store, cfgPath)
 }
 
@@ -79,6 +79,6 @@ func StringFlag(cfgPath string) *flag.StringFlag {
 // when the store value changes.
 //
 // For more information see the documentation for flag.NewMap
-func MapFlag(cfgPath string) *flag.MapFlag {
+func MapFlag(cfgPath string) *flag.Map {
 	return flag.NewMap(&Store, cfgPath)
 }
