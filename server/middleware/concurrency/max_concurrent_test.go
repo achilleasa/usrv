@@ -1,4 +1,4 @@
-package middleware
+package concurrency
 
 import (
 	"context"
@@ -11,12 +11,12 @@ import (
 	"github.com/achilleasa/usrv/transport/provider"
 )
 
-func TestMaxConcurrentRequests(t *testing.T) {
+func TestSingletonFactory(t *testing.T) {
 	type request struct{}
 	type response struct{}
 
 	sharedMiddleware := []server.MiddlewareFactory{
-		MaxConcurrentRequests(1, 100*time.Millisecond),
+		SingletonFactory(1, 100*time.Millisecond),
 	}
 
 	tr := provider.NewInMemory()
@@ -154,12 +154,12 @@ func TestMaxConcurrentRequests(t *testing.T) {
 	wg.Wait()
 }
 
-func TestMaxConcurrentRequestsPerEndpoint(t *testing.T) {
+func TestFactory(t *testing.T) {
 	type request struct{}
 	type response struct{}
 
 	middleware := []server.MiddlewareFactory{
-		MaxConcurrentRequestsPerEndpoint(1, 100*time.Millisecond),
+		Factory(1, 100*time.Millisecond),
 	}
 
 	tr := provider.NewInMemory()

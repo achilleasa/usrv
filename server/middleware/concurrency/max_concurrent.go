@@ -1,4 +1,11 @@
-package middleware
+// Package concurrency provides a concurrency limiting middleware that uses
+// a token pool to constraint the number of concurrent requests that can be
+// handled by a particular endpoint.
+//
+// The middleware blocks incoming requests until a token can be acquired or
+// a token acquisition timeout expires. In the latter case, requests will fail
+// with transport.ErrTimeout
+package concurrency
 
 import (
 	"context"
@@ -8,17 +15,19 @@ import (
 	"github.com/achilleasa/usrv/transport"
 )
 
-// MaxConcurrentRequests returns a middleware factory that limits the number
-// of concurrent requests to all defined endpoints using a token-based system.
+// SingletonFactory generates a concurrency limit middleware factory that always
+// returns a singleton concurrency limiter middleware instances. The instance
+// uses a token pool to limit the number of concurrent requests that can
+// pass through it.
 //
 // Incoming requests will be blocked until a token can be acquired or the
 // timeout expires in which case the response will be populated with a
 // transport.ErrTimeout error.
 //
-// The token pool is shared between all endpoints that use this middleware. To
-// apply a per-endpoint concurency limit, the MaxConcurrentRequestsPerEndpoint
-// function should be used instead.
-func MaxConcurrentRequests(maxConcurrent int, timeout time.Duration) server.MiddlewareFactory {
+// The token pool is shared between all endpoints that use this factory. To
+// apply a per-endpoint concurency limit, the Factory function should be used
+// instead.
+func SingletonFactory(maxConcurrent int, timeout time.Duration) server.MiddlewareFactory {
 	tokens := genTokens(maxConcurrent)
 	return func(next server.Middleware) server.Middleware {
 		return maxConcurrentFn(
@@ -29,8 +38,9 @@ func MaxConcurrentRequests(maxConcurrent int, timeout time.Duration) server.Midd
 	}
 }
 
-// MaxConcurrentRequests returns a middleware factory that limits the number
-// of concurrent requests to each individual endpoint using a token-based system.
+// Factory generates a concurrency limit middleware factory that returns new
+// concurrency limiter middleware instances. Each instance uses a token pool
+// to limit the number of concurrent requests that can pass through it.
 //
 // Incoming requests will be blocked until a token can be acquired or the
 // timeout expires in which case the response will be populated with a
@@ -38,8 +48,8 @@ func MaxConcurrentRequests(maxConcurrent int, timeout time.Duration) server.Midd
 //
 // Each endpoint that uses this middleware gets assigned its own private token
 // pool. To apply a shared concurency limit to multiple endpoints, the
-// MaxConcurrentRequests function should be used instead.
-func MaxConcurrentRequestsPerEndpoint(maxConcurrent int, timeout time.Duration) server.MiddlewareFactory {
+// SingletonFactory function should be used instead.
+func Factory(maxConcurrent int, timeout time.Duration) server.MiddlewareFactory {
 	return func(next server.Middleware) server.Middleware {
 		return maxConcurrentFn(
 			genTokens(maxConcurrent),
