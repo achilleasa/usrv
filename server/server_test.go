@@ -485,6 +485,19 @@ func TestListenErrors(t *testing.T) {
 	}
 }
 
+func TestMiddlewareFunc(t *testing.T) {
+	called := false
+	f := MiddlewareFunc(func(_ context.Context, _ transport.ImmutableMessage, _ transport.Message) {
+		called = true
+	})
+
+	f.Handle(nil, nil, nil)
+
+	if !called {
+		t.Fatalf("expected wrapped MiddlewareFunc to call f(req, res)")
+	}
+}
+
 type testCodec struct {
 	marshalerFn   encoding.Marshaler
 	unmarshalerFn encoding.Unmarshaler
