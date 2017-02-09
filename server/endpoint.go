@@ -52,7 +52,7 @@ type Endpoint struct {
 	// middleware chain that wraps the endpoint handler. If the slice contains
 	// factories [f1, f2, f3] then the server will generate a new handler
 	// defined as f1( f2( f3(endpoint handler) ) ).
-	Middleware []MiddlewareFactory
+	MiddlewareFactories []MiddlewareFactory
 }
 
 // validate ensures that the endpoint definition is valid.

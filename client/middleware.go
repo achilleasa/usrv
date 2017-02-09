@@ -31,21 +31,21 @@ type Middleware interface {
 }
 
 var (
-	globalMiddleware = []MiddlewareFactory{}
+	globalMiddlewareFactories = []MiddlewareFactory{}
 )
 
-// RegisterGlobalMiddleware appends one or more MiddlewareFactory to the global
+// RegisterGlobalMiddlewareFactories appends one or more MiddlewareFactory to the global
 // set of middleware that is automatically executed by all RPC clients
-func RegisterGlobalMiddleware(factories ...MiddlewareFactory) {
+func RegisterGlobalMiddlewareFactories(factories ...MiddlewareFactory) {
 	for _, factory := range factories {
 		if factory == nil {
 			continue
 		}
-		globalMiddleware = append(globalMiddleware, factory)
+		globalMiddlewareFactories = append(globalMiddlewareFactories, factory)
 	}
 }
 
-// ClearGlobalMiddleware clears the list of global middleware.
-func ClearGlobalMiddleware() {
-	globalMiddleware = []MiddlewareFactory{}
+// ClearGlobalMiddlewareFactories clears the list of global middleware.
+func ClearGlobalMiddlewareFactories() {
+	globalMiddlewareFactories = []MiddlewareFactory{}
 }

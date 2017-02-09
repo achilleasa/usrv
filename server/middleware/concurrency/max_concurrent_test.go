@@ -44,21 +44,21 @@ func TestSingletonFactory(t *testing.T) {
 				<-workDoneChan
 				return nil
 			},
-			Middleware: sharedMiddleware,
+			MiddlewareFactories: sharedMiddleware,
 		},
 		&server.Endpoint{
 			Name: "ep2",
 			Handler: func(_ context.Context, _ *request, _ *response) error {
 				return nil
 			},
-			Middleware: sharedMiddleware,
+			MiddlewareFactories: sharedMiddleware,
 		},
 		&server.Endpoint{
 			Name: "ep3",
 			Handler: func(_ context.Context, _ *request, _ *response) error {
 				return nil
 			},
-			Middleware: append([]server.MiddlewareFactory{
+			MiddlewareFactories: append([]server.MiddlewareFactory{
 				func(next server.Middleware) server.Middleware {
 					return server.MiddlewareFunc(func(ctx context.Context, req transport.ImmutableMessage, res transport.Message) {
 						ctx, _ = context.WithTimeout(ctx, 50*time.Millisecond)
@@ -187,14 +187,14 @@ func TestFactory(t *testing.T) {
 				<-workDoneChan
 				return nil
 			},
-			Middleware: middleware,
+			MiddlewareFactories: middleware,
 		},
 		&server.Endpoint{
 			Name: "ep2",
 			Handler: func(_ context.Context, _ *request, _ *response) error {
 				return nil
 			},
-			Middleware: middleware,
+			MiddlewareFactories: middleware,
 		},
 	)
 	if err != nil {
