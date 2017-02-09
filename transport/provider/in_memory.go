@@ -78,6 +78,10 @@ func (t *InMemory) Request(msg transport.Message) <-chan transport.ImmutableMess
 	// Build destination key for looking up the binding
 	key := fmt.Sprintf("%s/%s", msg.Receiver(), msg.ReceiverEndpoint())
 
+	// This is required to prevent go test -race from flagging this as a false-positive data race.
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
 	go func(handler transport.Handler, req transport.Message, resChan chan transport.ImmutableMessage) {
 		res := transport.MakeGenericMessage()
 		res.SenderField = msg.Receiver()
