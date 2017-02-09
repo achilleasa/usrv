@@ -307,7 +307,16 @@ func TestSingletonFactoryWithDynamicConfiguration(t *testing.T) {
 	m1 := f(nextFn)
 	m2 := f(server.MiddlewareFunc(func(_ context.Context, req transport.ImmutableMessage, res transport.Message) {}))
 
-	// Consume all tokens
+	// Let one request go through
+	okRes := transport.MakeGenericMessage()
+	defer okRes.Close()
+	m2.Handle(ctx, req, okRes)
+
+	if _, err := okRes.Payload(); err != nil {
+		t.Fatalf("expected call to succeed; got %v", err)
+	}
+
+	// Consume all tokens and block
 	go m1.Handle(ctx, req, res)
 	go m1.Handle(ctx, req, res)
 
@@ -324,7 +333,7 @@ func TestSingletonFactoryWithDynamicConfiguration(t *testing.T) {
 
 	// Add more tokens to the pool
 	s.SetKey(2, configPath+"/max_concurrent", "3")
-	okRes := transport.MakeGenericMessage()
+	okRes = transport.MakeGenericMessage()
 	defer okRes.Close()
 	m2.Handle(ctx, req, okRes)
 
