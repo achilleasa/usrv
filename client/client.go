@@ -45,7 +45,7 @@ func New(serviceName string, options ...Option) (*Client, error) {
 	}
 
 	// Create middleware instances using the global middleware factories
-	for _, factory := range globalMiddleware {
+	for _, factory := range globalMiddlewareFactories {
 		c.middleware = append(c.middleware, factory())
 	}
 

@@ -154,11 +154,11 @@ func TestClientRequestWithServerEndpointCtx(t *testing.T) {
 }
 
 func TestClientMiddlewareChain(t *testing.T) {
-	origMiddleware := globalMiddleware
+	origMiddleware := globalMiddlewareFactories
 	defer func() {
-		globalMiddleware = origMiddleware
+		globalMiddlewareFactories = origMiddleware
 	}()
-	ClearGlobalMiddleware()
+	ClearGlobalMiddlewareFactories()
 
 	tr := provider.NewInMemory()
 	defer tr.Close()
@@ -178,13 +178,13 @@ func TestClientMiddlewareChain(t *testing.T) {
 	logChan := make(chan string, 8)
 
 	// Should be no-op
-	RegisterGlobalMiddleware(nil)
+	RegisterGlobalMiddlewareFactories(nil)
 
-	RegisterGlobalMiddleware(
+	RegisterGlobalMiddlewareFactories(
 		nil, // invalid middleware; should be filtered out
 		testMiddlewareFactory("global middleware 0", logChan, false, nil),
 	)
-	RegisterGlobalMiddleware(
+	RegisterGlobalMiddlewareFactories(
 		testMiddlewareFactory("global middleware 1", logChan, true, nil),
 	)
 

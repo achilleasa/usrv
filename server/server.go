@@ -270,18 +270,18 @@ func (s *Server) generateHandler(ep *Endpoint) transport.Handler {
 
 	// Call each middleware factory in the endpoint factory list in reverse
 	// order and wrap the generated handler.
-	if ep.Middleware != nil {
-		for index := len(ep.Middleware) - 1; index >= 0; index-- {
-			if ep.Middleware[index] == nil {
+	if ep.MiddlewareFactories != nil {
+		for index := len(ep.MiddlewareFactories) - 1; index >= 0; index-- {
+			if ep.MiddlewareFactories[index] == nil {
 				continue
 			}
-			middlewareChain = ep.Middleware[index](middlewareChain)
+			middlewareChain = ep.MiddlewareFactories[index](middlewareChain)
 		}
 	}
 
 	// Apply global middleware in reverse order
-	for index := len(globalMiddleware) - 1; index >= 0; index-- {
-		middlewareChain = globalMiddleware[index](middlewareChain)
+	for index := len(globalMiddlewareFactories) - 1; index >= 0; index-- {
+		middlewareChain = globalMiddlewareFactories[index](middlewareChain)
 	}
 
 	// Return a compatible transport handler

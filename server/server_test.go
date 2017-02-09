@@ -115,8 +115,8 @@ func TestEndpointHandler(t *testing.T) {
 		Greeting string `json:"greeting"`
 	}
 
-	ClearGlobalMiddleware()
-	RegisterGlobalMiddleware(
+	ClearGlobalMiddlewareFactories()
+	RegisterGlobalMiddlewareFactories(
 		nil,
 		func(next Middleware) Middleware {
 			return MiddlewareFunc(func(ctx context.Context, req transport.ImmutableMessage, res transport.Message) {
@@ -160,7 +160,7 @@ func TestEndpointHandler(t *testing.T) {
 				return errors.New(expError)
 			}
 		},
-		Middleware: []MiddlewareFactory{
+		MiddlewareFactories: []MiddlewareFactory{
 			genMiddleware("1"),
 			nil,
 			genMiddleware("2"),
