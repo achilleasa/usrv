@@ -37,9 +37,6 @@ func (m *GenericMessage) ID() string {
 
 // Close implements io.Closer and should be called when the message is no longer used.
 func (m *GenericMessage) Close() error {
-	m.PayloadField = nil
-	m.ErrField = nil
-	m.HeadersField = nil
 	msgPool.Put(m)
 
 	return nil
@@ -106,7 +103,8 @@ func MakeGenericMessage() *GenericMessage {
 	m := msgPool.Get().(*GenericMessage)
 	m.IDField = GenerateID()
 	m.HeadersField = make(map[string]string, 0)
-
+	m.PayloadField = nil
+	m.ErrField = nil
 	return m
 }
 

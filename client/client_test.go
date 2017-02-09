@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -295,10 +296,10 @@ func TestClientErrors(t *testing.T) {
 	tr := provider.NewInMemory()
 	defer tr.Close()
 
-	invocation := 0
+	var invocation int32 = 0
 	tr.Bind("service", "endpoint", transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
-			invocation++
+			invocation := atomic.AddInt32(&invocation, 1)
 			// first two invocations succeed
 			if invocation <= 2 {
 				<-time.After(100 * time.Millisecond)
