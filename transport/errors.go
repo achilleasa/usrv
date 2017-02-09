@@ -10,7 +10,8 @@ var (
 
 // Delivery errors
 var (
-	ErrNotFound      = errors.New("unknown receiver and/or endpoint")
-	ErrTimeout       = errors.New("message delivery timed out")
-	ErrNotAuthorized = errors.New("not authorized for this operation")
+	ErrNotFound           = errors.New("unknown receiver and/or endpoint")
+	ErrTimeout            = errors.New("message delivery timed out")
+	ErrServiceUnavailable = errors.New("service unavailable")
+	ErrNotAuthorized      = errors.New("not authorized for this operation")
 )
