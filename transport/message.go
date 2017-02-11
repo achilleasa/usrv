@@ -23,6 +23,9 @@ type ImmutableMessage interface {
 	// ReceiverEndpoint returns the endpoint where the message should be delivered at.
 	ReceiverEndpoint() string
 
+	// ReceiverVersion returns the requested receiving service's version.
+	ReceiverVersion() string
+
 	// Headers returns a map of header values associated with the message.
 	Headers() map[string]string
 
@@ -52,4 +55,7 @@ type Message interface {
 	// SetHeaders sets the contents of a batch of headers. This is equivalent
 	// to iterating the map and calling SetHeader for each key/value.
 	SetHeaders(headers map[string]string)
+
+	// SetReceiverVersion sets the required version for the receiving service.
+	SetReceiverVersion(string)
 }
