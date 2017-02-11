@@ -66,6 +66,9 @@ type Server struct {
 	// The name of the service exposed by the server.
 	serviceName string
 
+	// The service version
+	serviceVersion string
+
 	// The set of defined endpoints.
 	endpoints []*Endpoint
 
@@ -127,7 +130,7 @@ func (s *Server) Listen() error {
 
 	var err error
 	for _, endpoint := range s.endpoints {
-		err = s.transport.Bind(s.serviceName, endpoint.Name, s.generateHandler(endpoint))
+		err = s.transport.Bind(s.serviceVersion, s.serviceName, endpoint.Name, s.generateHandler(endpoint))
 		if err != nil {
 			s.mutex.Unlock()
 			return err

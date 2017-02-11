@@ -33,3 +33,12 @@ func WithPanicHandler(handler PanicHandler) Option {
 		return nil
 	}
 }
+
+// WithVersion defines the version of the service provided by the server.
+// The version value is passed to Bind calls to the underlying transport.
+func WithVersion(version string) Option {
+	return func(s *Server) error {
+		s.serviceVersion = version
+		return nil
+	}
+}
