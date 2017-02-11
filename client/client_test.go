@@ -30,7 +30,7 @@ func TestClientRequest(t *testing.T) {
 	expGreeting := "hello tester"
 	expReqPayload := `{"name":"tester"}`
 	expResPayload := `{"greeting":"` + expGreeting + `"}`
-	tr.Bind("service", "endpoint", transport.HandlerFunc(
+	tr.Bind("", "service", "endpoint", transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
 			payload, _ := req.Payload()
 			payloadStr := string(payload)
@@ -91,7 +91,7 @@ func TestClientRequestWithServerEndpointCtx(t *testing.T) {
 	expGreeting := "hello tester"
 	expReqPayload := `{"name":"tester"}`
 	expResPayload := `{"greeting":"` + expGreeting + `"}`
-	tr.Bind(expReceiver, expEndpoint, transport.HandlerFunc(
+	tr.Bind("", expReceiver, expEndpoint, transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
 			payload, _ := req.Payload()
 			payloadStr := string(payload)
@@ -169,7 +169,7 @@ func TestClientMiddlewareChain(t *testing.T) {
 	expEndpoint := "test"
 	expResPayload := `{"hello":"back"}`
 
-	tr.Bind(expReceiver, expEndpoint, transport.HandlerFunc(
+	tr.Bind("", expReceiver, expEndpoint, transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
 			res.SetPayload([]byte(expResPayload), nil)
 			<-time.After(100 * time.Millisecond)
@@ -296,8 +296,8 @@ func TestClientErrors(t *testing.T) {
 	tr := provider.NewInMemory()
 	defer tr.Close()
 
-	var invocation int32 = 0
-	tr.Bind("service", "endpoint", transport.HandlerFunc(
+	var invocation int32
+	tr.Bind("", "service", "endpoint", transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
 			invocation := atomic.AddInt32(&invocation, 1)
 			// first two invocations succeed

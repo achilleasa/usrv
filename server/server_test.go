@@ -234,6 +234,7 @@ func TestMarshalingErrorHandling(t *testing.T) {
 
 	codec := nopCodec()
 	srv, err := New(
+
 		"test",
 		WithCodec(codec),
 	)
@@ -313,6 +314,7 @@ func TestPanicHandling(t *testing.T) {
 	}
 
 	srv, err := New(
+
 		"test",
 		WithCodec(nopCodec()),
 		WithPanicHandler(panicHandler),
@@ -443,6 +445,7 @@ func TestListenErrors(t *testing.T) {
 
 	srv, err := New(
 		"test",
+		WithVersion("v0"),
 		WithTransport(provider.NewInMemory()),
 	)
 	if err != nil {
@@ -470,7 +473,7 @@ func TestListenErrors(t *testing.T) {
 	}
 
 	err = srv.Listen()
-	expErrorMsg := `binding "test/test" already defined`
+	expErrorMsg := `binding "test-v0/test" already defined`
 	if err == nil || (err != nil && err.Error() != expErrorMsg) {
 		t.Fatalf("expected error %q; got %v", expErrorMsg, err)
 	}
@@ -533,7 +536,7 @@ func (tr *testTransportThatFailsDialing) Request(_ transport.Message) <-chan tra
 	return nil
 }
 
-func (tr *testTransportThatFailsDialing) Bind(_, _ string, _ transport.Handler) error {
+func (tr *testTransportThatFailsDialing) Bind(_, _, _ string, _ transport.Handler) error {
 	return nil
 }
 
