@@ -35,7 +35,7 @@ func WithMiddleware(factories ...MiddlewareFactory) Option {
 			if factory == nil {
 				continue
 			}
-			list = append(list, factory())
+			list = append(list, factory(s.serviceName))
 		}
 
 		s.middleware = append(s.middleware, list...)
