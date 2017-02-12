@@ -48,7 +48,7 @@ const (
 // returns a singleton circuit-breaker instance using the supplied configuration.
 func SingletonFactory(cfg Config) client.MiddlewareFactory {
 	cb := newCiruitBreaker(cfg)
-	return func() client.Middleware {
+	return func(_ string) client.Middleware {
 		return cb
 	}
 }
@@ -56,7 +56,7 @@ func SingletonFactory(cfg Config) client.MiddlewareFactory {
 // Factory generates a circuit-breaker middleware factory that returns new
 // circuit-breaker instances using the supplied configuration.
 func Factory(cfg Config) client.MiddlewareFactory {
-	return func() client.Middleware {
+	return func(_ string) client.Middleware {
 		return newCiruitBreaker(cfg)
 	}
 }

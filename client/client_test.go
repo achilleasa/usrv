@@ -362,6 +362,32 @@ func TestClientErrors(t *testing.T) {
 	}
 }
 
+func TestMiddlewareFactoryReceivesServiceName(t *testing.T) {
+	origMiddleware := globalMiddlewareFactories
+	defer func() {
+		globalMiddlewareFactories = origMiddleware
+	}()
+	ClearGlobalMiddlewareFactories()
+
+	RegisterGlobalMiddlewareFactories(testMiddlewareFactory("global middleware 0", nil, false, nil))
+
+	expServiceName := "fooService"
+	c, err := New(expServiceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expLen := 1
+	if len(c.middleware) != expLen {
+		t.Fatalf("expected client to instanciate %d middleware; got %d", expLen, len(c.middleware))
+	}
+
+	m := c.middleware[0].(*testMiddleware)
+	if m.serviceName != expServiceName {
+		t.Fatalf("expected middleware factory to be invoked with service name %q; got %q", expServiceName, m.serviceName)
+	}
+}
+
 type testCodec struct {
 	marshalerFn   encoding.Marshaler
 	unmarshalerFn encoding.Unmarshaler
@@ -387,6 +413,7 @@ func nopCodec() *testCodec {
 }
 
 type testMiddleware struct {
+	serviceName  string
 	name         string
 	logChan      chan string
 	returnNilCtx bool
@@ -394,8 +421,9 @@ type testMiddleware struct {
 }
 
 func testMiddlewareFactory(name string, logChan chan string, returnNilCtx bool, returnErr error) MiddlewareFactory {
-	return func() Middleware {
+	return func(serviceName string) Middleware {
 		return &testMiddleware{
+			serviceName:  serviceName,
 			name:         name,
 			logChan:      logChan,
 			returnNilCtx: returnNilCtx,
