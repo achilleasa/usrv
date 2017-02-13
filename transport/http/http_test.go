@@ -1,4 +1,4 @@
-package provider
+package http
 
 import (
 	"crypto/tls"
@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -752,4 +753,17 @@ yRVjlpqDKQEAAtSLyU7rvW6Im0uwThEzrsMnxPXA2gPNfDN9TwWhtxY=
 	kf.Close()
 
 	return cf.Name(), kf.Name()
+}
+
+func newMessage(from, to string) transport.Message {
+	fromFields := strings.Split(from, "/")
+	toFields := strings.Split(to, "/")
+
+	m := transport.MakeGenericMessage()
+	m.SenderField = fromFields[0]
+	m.SenderEndpointField = fromFields[1]
+	m.ReceiverField = toFields[0]
+	m.ReceiverEndpointField = toFields[1]
+
+	return m
 }

@@ -1,4 +1,4 @@
-package provider
+package memory
 
 import (
 	"reflect"

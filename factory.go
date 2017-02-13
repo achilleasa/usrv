@@ -4,7 +4,7 @@ import (
 	"github.com/achilleasa/usrv/encoding"
 	"github.com/achilleasa/usrv/encoding/json"
 	"github.com/achilleasa/usrv/transport"
-	"github.com/achilleasa/usrv/transport/provider"
+	"github.com/achilleasa/usrv/transport/http"
 )
 
 var (
@@ -25,6 +25,6 @@ var (
 )
 
 func init() {
-	DefaultTransportFactory = provider.HTTPTransportFactory
+	DefaultTransportFactory = http.HTTPTransportFactory
 	DefaultCodecFactory = json.Codec
 }
