@@ -22,10 +22,10 @@ func (f HandlerFunc) Process(req ImmutableMessage, res Message) {
 	f(req, res)
 }
 
-// Transport defines an interface implemented by transports that can be used
+// Provider defines an interface implemented by transports that can be used
 // by usrv. The transport layer is responsible for the exchange of encoded
 // messages between RPC clients and servers.
-type Transport interface {
+type Provider interface {
 	// All transports must implement io.Closer to clean up and shutdown.
 	io.Closer
 

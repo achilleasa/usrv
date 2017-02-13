@@ -20,7 +20,7 @@ import (
 // usrv.DefaultTransportFactory to fetch a transport instance.
 type Client struct {
 	// The transport used by the client.
-	transport transport.Transport
+	transport transport.Provider
 
 	// A codec instance for handling marshaling/unmarshaling.
 	codec encoding.Codec

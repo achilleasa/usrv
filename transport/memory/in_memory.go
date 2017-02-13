@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	_ transport.Transport = &Transport{}
+	_ transport.Provider = &Transport{}
 )
 
 // Transport implements the in-memory transport. It uses channels and go-routines
@@ -124,6 +124,6 @@ func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMes
 // whose concrete implementation is the InMemory transport. This function behaves
 // exactly the same as New() but returns back a Transport interface allowing
 // it to be used as usrv.DefaultTransportFactory.
-func Factory() transport.Transport {
+func Factory() transport.Provider {
 	return New()
 }

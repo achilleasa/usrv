@@ -13,7 +13,7 @@ var (
 	//
 	// When usrv is imported, DefaultTransportFactory is set up to return
 	// HTTP transport instances.
-	DefaultTransportFactory func() transport.Transport
+	DefaultTransportFactory func() transport.Provider
 
 	// DefaultCodecFactory is a function that returns back a new
 	// instance of the default Codec used for marshaling and unmarshaling

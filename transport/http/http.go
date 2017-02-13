@@ -54,7 +54,7 @@ var (
 )
 
 var (
-	_ transport.Transport = &Transport{}
+	_ transport.Provider = &Transport{}
 )
 
 // Binding encapsulates the details of a service/endpoint combination and
@@ -706,7 +706,7 @@ func (t *Transport) buildTLSConfig() (tlsConfig *tls.Config, err error) {
 // whose concrete implementation is the HTTP transport. This function behaves
 // exactly the same as New() but returns back a Transport interface allowing
 // it to be used as usrv.DefaultTransportFactory.
-func Factory() transport.Transport {
+func Factory() transport.Provider {
 	return New()
 }
 
