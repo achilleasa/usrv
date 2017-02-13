@@ -9,6 +9,29 @@ import (
 	"github.com/achilleasa/usrv/transport"
 )
 
+func TestInMemoryBindVersions(t *testing.T) {
+	tr := NewInMemory()
+	defer tr.Close()
+
+	handler := transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {})
+	var err error
+
+	err = tr.Bind("v0", "service", "endpoint", handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expLen := 2
+	if len(tr.bindings) != expLen {
+		t.Fatalf("expected bind to generate an additional binding without version")
+	}
+
+	err = tr.Bind("v1", "service", "endpoint", handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInMemoryErrors(t *testing.T) {
 	tr := NewInMemory()
 	defer tr.Close()
@@ -21,11 +44,11 @@ func TestInMemoryErrors(t *testing.T) {
 	}
 
 	// Try to bind to already bound endpoint
-	err := tr.Bind("service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	err := tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = tr.Bind("service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	err = tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
 	expError := `binding "service/endpoint" already defined`
 	if err == nil || err.Error() != expError {
 		t.Fatalf("expected to get error %q; got %v", expError, err)
@@ -37,7 +60,7 @@ func TestInMemoryErrors(t *testing.T) {
 	}
 
 	// Bind to dialed transport
-	err = tr.Bind("service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	err = tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
 	if err != transport.ErrTransportAlreadyDialed {
 		t.Fatalf("expected err %v; got %v", transport.ErrTransportAlreadyDialed, err)
 	}
@@ -53,7 +76,7 @@ func TestInMemoryErrors(t *testing.T) {
 	}
 }
 
-func TestRPC(t *testing.T) {
+func TestInMemoryRPC(t *testing.T) {
 	tr := InMemoryTransportFactory()
 	defer tr.Close()
 
@@ -101,7 +124,7 @@ func TestRPC(t *testing.T) {
 		res.SetPayload([]byte("hello back!"), nil)
 	}
 
-	err := tr.Bind("toService", "toEndpoint", transport.HandlerFunc(handleRPC))
+	err := tr.Bind("v0", "toService", "toEndpoint", transport.HandlerFunc(handleRPC))
 
 	if err != nil {
 		t.Fatal(err)
@@ -149,6 +172,20 @@ func TestRPC(t *testing.T) {
 	}
 	if string(payload) != expValues[0] {
 		t.Errorf("expected payload to be %q; got %q", expValues[0], string(payload))
+	}
+
+	// Try a request with a specific service verison request
+	req.SetReceiverVersion("v0")
+	resChan = tr.Request(req)
+	res = <-resChan
+
+	payload, err = res.Payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(payload) != expValues[0] {
+		t.Errorf("expected payload for versioned request to be %q; got %q", expValues[0], string(payload))
 	}
 }
 
@@ -199,7 +236,7 @@ func benchInMemory(b *testing.B, workers int) {
 		}()
 	}
 
-	err := tr.Bind("benchmark", "consumer", transport.HandlerFunc(func(_ transport.ImmutableMessage, res transport.Message) {
+	err := tr.Bind("", "benchmark", "consumer", transport.HandlerFunc(func(_ transport.ImmutableMessage, res transport.Message) {
 		res.SetPayload(payload, nil)
 	}))
 	if err != nil {

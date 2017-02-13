@@ -36,9 +36,12 @@ type Transport interface {
 	// Bind listens for messages send to a particular service and
 	// endpoint combination and invokes the supplied handler to process them.
 	//
+	// Transports may implement versioning for bindings in order to support
+	// complex deployment flows such as blue-green deployments.
+	//
 	// Bindings can only be established on a closed transport. Calls to Bind
 	// after a call to Dial will result in an error.
-	Bind(service, endpoint string, handler Handler) error
+	Bind(version, service, endpoint string, handler Handler) error
 
 	// Request performs an RPC and returns back a read-only channel for
 	// receiving the result.

@@ -30,7 +30,7 @@ func TestClientRequest(t *testing.T) {
 	expGreeting := "hello tester"
 	expReqPayload := `{"name":"tester"}`
 	expResPayload := `{"greeting":"` + expGreeting + `"}`
-	tr.Bind("service", "endpoint", transport.HandlerFunc(
+	tr.Bind("", "service", "endpoint", transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
 			payload, _ := req.Payload()
 			payloadStr := string(payload)
@@ -91,7 +91,7 @@ func TestClientRequestWithServerEndpointCtx(t *testing.T) {
 	expGreeting := "hello tester"
 	expReqPayload := `{"name":"tester"}`
 	expResPayload := `{"greeting":"` + expGreeting + `"}`
-	tr.Bind(expReceiver, expEndpoint, transport.HandlerFunc(
+	tr.Bind("", expReceiver, expEndpoint, transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
 			payload, _ := req.Payload()
 			payloadStr := string(payload)
@@ -169,7 +169,7 @@ func TestClientMiddlewareChain(t *testing.T) {
 	expEndpoint := "test"
 	expResPayload := `{"hello":"back"}`
 
-	tr.Bind(expReceiver, expEndpoint, transport.HandlerFunc(
+	tr.Bind("", expReceiver, expEndpoint, transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
 			res.SetPayload([]byte(expResPayload), nil)
 			<-time.After(100 * time.Millisecond)
@@ -296,8 +296,8 @@ func TestClientErrors(t *testing.T) {
 	tr := provider.NewInMemory()
 	defer tr.Close()
 
-	var invocation int32 = 0
-	tr.Bind("service", "endpoint", transport.HandlerFunc(
+	var invocation int32
+	tr.Bind("", "service", "endpoint", transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
 			invocation := atomic.AddInt32(&invocation, 1)
 			// first two invocations succeed
@@ -362,6 +362,32 @@ func TestClientErrors(t *testing.T) {
 	}
 }
 
+func TestMiddlewareFactoryReceivesServiceName(t *testing.T) {
+	origMiddleware := globalMiddlewareFactories
+	defer func() {
+		globalMiddlewareFactories = origMiddleware
+	}()
+	ClearGlobalMiddlewareFactories()
+
+	RegisterGlobalMiddlewareFactories(testMiddlewareFactory("global middleware 0", nil, false, nil))
+
+	expServiceName := "fooService"
+	c, err := New(expServiceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expLen := 1
+	if len(c.middleware) != expLen {
+		t.Fatalf("expected client to instanciate %d middleware; got %d", expLen, len(c.middleware))
+	}
+
+	m := c.middleware[0].(*testMiddleware)
+	if m.serviceName != expServiceName {
+		t.Fatalf("expected middleware factory to be invoked with service name %q; got %q", expServiceName, m.serviceName)
+	}
+}
+
 type testCodec struct {
 	marshalerFn   encoding.Marshaler
 	unmarshalerFn encoding.Unmarshaler
@@ -387,6 +413,7 @@ func nopCodec() *testCodec {
 }
 
 type testMiddleware struct {
+	serviceName  string
 	name         string
 	logChan      chan string
 	returnNilCtx bool
@@ -394,8 +421,9 @@ type testMiddleware struct {
 }
 
 func testMiddlewareFactory(name string, logChan chan string, returnNilCtx bool, returnErr error) MiddlewareFactory {
-	return func() Middleware {
+	return func(serviceName string) Middleware {
 		return &testMiddleware{
+			serviceName:  serviceName,
 			name:         name,
 			logChan:      logChan,
 			returnNilCtx: returnNilCtx,

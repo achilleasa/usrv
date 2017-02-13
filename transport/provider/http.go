@@ -52,6 +52,10 @@ var (
 	errInvalidVerifyMode    = errors.New(`invalid tls verify option; supported values are "skip" and "cert_pool"`)
 )
 
+var (
+	_ transport.Transport = &HTTP{}
+)
+
 // Binding encapsulates the details of a service/endpoint combination and
 // a handler for requests to it.
 type binding struct {
@@ -67,12 +71,12 @@ type binding struct {
 	endpoint string
 }
 
-// ServiceURLBuilder defines an interface for mapping a service, endpoint
-// combination into a remote path URL.
+// ServiceURLBuilder defines an interface for mapping a version, service and endpoint
+// tuple into a remote path URL.
 //
 // URL receives the service and endpoint name as input and returns back a URL.
 type ServiceURLBuilder interface {
-	URL(service, endpoint string) string
+	URL(version, service, endpoint string) string
 }
 
 type defaultURLBuilder struct {
@@ -85,7 +89,7 @@ func newDefaultURLBuilder() *defaultURLBuilder {
 	}
 }
 
-func (b defaultURLBuilder) URL(service, endpoint string) string {
+func (b defaultURLBuilder) URL(version, service, endpoint string) string {
 	cfg := b.config.Get()
 
 	port := cfg["port"]
@@ -93,10 +97,15 @@ func (b defaultURLBuilder) URL(service, endpoint string) string {
 		port = ":" + port
 	}
 
+	if version != "" {
+		version = "-" + version
+	}
+
 	return fmt.Sprintf(
-		"%s://%s%s%s/%s/%s",
+		"%s://%s%s%s%s/%s/%s",
 		cfg["protocol"],
 		service,
+		version,
 		cfg["client/hostsuffix"],
 		port,
 		service,
@@ -171,12 +180,16 @@ func (rm *requestMakerThatAlwaysFails) Do(req *nethttp.Request) (*nethttp.Respon
 //    when building the remote URL (default: .service)
 //
 // Using the above configuration values, the default ServiceURLBuilder generates
-// remote URLs using the pattern: "$protocol://service_name$suffix(:$port)/service_name/endpoint_name".
-// (port is only included if its defined). The built-in ServiceURLBuilder implementation
-// is designed to enable DNS-based service discovery. In case that the default
-// implementation is not sufficient or you want to test against a locally running
-// server, you can override the URLBuilder field with a custom ServiceURLBuilder
-// implementation prior to calling Dial().
+// remote URLs using the pattern: "$protocol://service_name(-$version)$suffix(:$port)/service_name/endpoint_name".
+// The port is only included if the "transport/http/port" parameter is defined.
+// If the outgoing message requests a particular service version then that version
+// value will also be included in the generated URL.
+//
+// The built-in ServiceURLBuilder implementation is designed to enable DNS-based
+// service discovery. In case that the default implementation is not sufficient
+// or you want to test against a locally running server, you can override the
+// URLBuilder field with a custom ServiceURLBuilder implementation prior to calling
+// Dial().
 type HTTP struct {
 	// Internal locks.
 	mutex  sync.Mutex
@@ -264,11 +277,16 @@ func (t *HTTP) Close() error {
 }
 
 // Bind listens for messages send to a particular service and
-// endpoint combination and invokes the supplied handler to process them.
+// endpoint tuple and invokes the supplied handler to process them.
+//
+// The HTTP transport ignores the version argument as it assumes that routing
+// to a service with a particular version is handled at the DNS level. Attempting
+// to define multiple versions for the same service and endpoint tuple will cause
+// an error to be returned.
 //
 // Bindings can only be established on a closed transport. Calls to Bind
 // after a call to Dial will result in an error.
-func (t *HTTP) Bind(service, endpoint string, handler transport.Handler) error {
+func (t *HTTP) Bind(version, service, endpoint string, handler transport.Handler) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -312,7 +330,7 @@ func (t *HTTP) Request(reqMsg transport.Message) <-chan transport.ImmutableMessa
 		payload, _ := reqMsg.Payload()
 		httpReq, err := newRequest(
 			"POST",
-			t.URLBuilder.URL(reqMsg.Receiver(), reqMsg.ReceiverEndpoint()),
+			t.URLBuilder.URL(reqMsg.ReceiverVersion(), reqMsg.Receiver(), reqMsg.ReceiverEndpoint()),
 			bytes.NewReader(payload),
 		)
 		if err != nil {

@@ -46,6 +46,19 @@ func TestGenericMessage(t *testing.T) {
 	if m.ReceiverEndpoint() != expValue {
 		t.Errorf("expected ReceiverEndpoint() to return %q; got %q", expValue, m.ReceiverEndpoint())
 	}
+
+	expValue = "v0"
+	m.ReceiverVersionField = expValue
+	if m.ReceiverVersion() != expValue {
+		t.Errorf("expected ReceiverVersion() to return %q; got %q", expValue, m.ReceiverVersion())
+	}
+
+	expValue = "v1"
+	m.SetReceiverVersion(expValue)
+	if m.ReceiverVersion() != expValue {
+		t.Errorf("expected SetReceiverVersion(%q) to update the version; got %q", expValue, m.ReceiverVersion())
+	}
+
 	expValue = "foo"
 	m.SetHeader("kEy1", expValue)
 	if m.Headers()["Key1"] != expValue {

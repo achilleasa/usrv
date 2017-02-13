@@ -25,11 +25,11 @@ func TestHTTPErrors(t *testing.T) {
 	defer tr.Close()
 
 	// Try to bind to already bound endpoint
-	err := tr.Bind("service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	err := tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = tr.Bind("service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	err = tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
 	expError := `binding "service/endpoint" already defined`
 	if err == nil || err.Error() != expError {
 		t.Fatalf("expected to get error %q; got %v", expError, err)
@@ -73,7 +73,7 @@ func TestHTTPErrors(t *testing.T) {
 	}
 
 	// Test bind after dialing
-	err = tr.Bind("service", "endpoint1", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	err = tr.Bind("", "service", "endpoint1", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
 	if err != transport.ErrTransportAlreadyDialed {
 		t.Fatalf("expected to get error %q; got %v", transport.ErrTransportAlreadyDialed, err)
 	}
@@ -103,7 +103,7 @@ func TestHTTPErrors(t *testing.T) {
 		t.Fatalf("expected to get error %q; got %v", expError, err)
 	}
 
-	httpRes, err := http.Get(tr.URLBuilder.URL("service", "endpoint"))
+	httpRes, err := http.Get(tr.URLBuilder.URL("", "service", "endpoint"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestHTTPErrorPropagation(t *testing.T) {
 		res.SetPayload(nil, expErrors[0])
 	}
 
-	err := tr.Bind("test", "errorEndpoint", transport.HandlerFunc(handleRPC))
+	err := tr.Bind("", "test", "errorEndpoint", transport.HandlerFunc(handleRPC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,12 +347,12 @@ func TestRPCOverHTTP(t *testing.T) {
 		})
 	}
 
-	err := tr.Bind("service", "nop-endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	err := tr.Bind("", "service", "nop-endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = tr.Bind("toService", "toEndpoint", transport.HandlerFunc(handleRPC))
+	err = tr.Bind("", "toService", "toEndpoint", transport.HandlerFunc(handleRPC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestRPCOverHTTPS(t *testing.T) {
 		res.SetPayload([]byte(expValue), nil)
 	}
 
-	err := tr.Bind("localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
+	err := tr.Bind("", "localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestHTTPReconfiguration(t *testing.T) {
 		}
 	}
 
-	err := tr.Bind("localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
+	err := tr.Bind("", "localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +595,7 @@ func TestHTTPClientReconfiguration(t *testing.T) {
 		res.SetPayload([]byte(expValue), nil)
 	}
 
-	err := trServer.Bind("localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
+	err := trServer.Bind("", "localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -651,7 +651,13 @@ func TestDefaultURLBuilder(t *testing.T) {
 	})
 
 	expURL := "http://foo.service:1234/foo/bar"
-	url := builder.URL("foo", "bar")
+	url := builder.URL("", "foo", "bar")
+	if expURL != url {
+		t.Fatalf("expectd builder to return URL %q; got %q", expURL, url)
+	}
+
+	expURL = "http://foo-123.service:1234/foo/bar"
+	url = builder.URL("123", "foo", "bar")
 	if expURL != url {
 		t.Fatalf("expectd builder to return URL %q; got %q", expURL, url)
 	}
@@ -662,7 +668,7 @@ func TestDefaultURLBuilder(t *testing.T) {
 	})
 
 	expURL = "https://foo.service/foo/bar"
-	url = builder.URL("foo", "bar")
+	url = builder.URL("", "foo", "bar")
 	if expURL != url {
 		t.Fatalf("expectd builder to return URL %q; got %q", expURL, url)
 	}
@@ -672,7 +678,7 @@ type testURLBuilder struct {
 	addr string
 }
 
-func (b testURLBuilder) URL(service, endpoint string) string {
+func (b testURLBuilder) URL(version, service, endpoint string) string {
 	return fmt.Sprintf("%s/%s/%s", b.addr, service, endpoint)
 }
 

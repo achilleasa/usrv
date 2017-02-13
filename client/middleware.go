@@ -7,7 +7,7 @@ import (
 )
 
 // A MiddlewareFactory generates a Middleware instances.
-type MiddlewareFactory func() Middleware
+type MiddlewareFactory func(serviceName string) Middleware
 
 // Middleware is an interface implemented by objects that can be injected into
 // a client's outgoing request flow.

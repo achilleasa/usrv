@@ -25,6 +25,7 @@ type GenericMessage struct {
 	ReceiverField         string
 	SenderEndpointField   string
 	ReceiverEndpointField string
+	ReceiverVersionField  string
 	HeadersField          map[string]string
 	PayloadField          []byte
 	ErrField              error
@@ -60,6 +61,16 @@ func (m *GenericMessage) SenderEndpoint() string {
 // ReceiverEndpoint returns the receiving service's endpoint.
 func (m *GenericMessage) ReceiverEndpoint() string {
 	return m.ReceiverEndpointField
+}
+
+// ReceiverVersion returns the requested receiving service's version.
+func (m *GenericMessage) ReceiverVersion() string {
+	return m.ReceiverVersionField
+}
+
+// SetReceiverVersion sets the requested receiving service's version.
+func (m *GenericMessage) SetReceiverVersion(version string) {
+	m.ReceiverVersionField = version
 }
 
 // Headers returns a map of header values associated with the message.
@@ -105,6 +116,7 @@ func MakeGenericMessage() *GenericMessage {
 	m.HeadersField = make(map[string]string, 0)
 	m.PayloadField = nil
 	m.ErrField = nil
+	m.ReceiverVersionField = ""
 	return m
 }
 

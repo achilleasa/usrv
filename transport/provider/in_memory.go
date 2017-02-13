@@ -8,6 +8,10 @@ import (
 	"github.com/achilleasa/usrv/transport"
 )
 
+var (
+	_ transport.Transport = &InMemory{}
+)
+
 // InMemory implements the in-memory transport. It uses channels and go-routines
 // to facilitate the exchange of messages making it very easy to use when
 // writing tests.
@@ -48,12 +52,15 @@ func (t *InMemory) Close() error {
 	return nil
 }
 
-// Bind listens for messages send to a particular service and
-// endpoint combination and invokes the supplied handler to process them.
+// Bind listens for messages send to a particular version, service and
+// endpoint tuple and invokes the supplied handler to process them.
+//
+// Calls to bind will also register a binding without a version to allow
+// local clients to target this endpoint if no version is specified.
 //
 // Bindings can only be established on a closed transport. Calls to Bind
 // after a call to Dial will result in an error.
-func (t *InMemory) Bind(service, endpoint string, handler transport.Handler) error {
+func (t *InMemory) Bind(version, service, endpoint string, handler transport.Handler) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -61,11 +68,17 @@ func (t *InMemory) Bind(service, endpoint string, handler transport.Handler) err
 		return transport.ErrTransportAlreadyDialed
 	}
 
-	key := fmt.Sprintf("%s/%s", service, endpoint)
+	if version != "" {
+		version = "-" + version
+	}
+
+	key := fmt.Sprintf("%s%s/%s", service, version, endpoint)
+	versionlessKey := fmt.Sprintf("%s/%s", service, endpoint)
 	if t.bindings[key] != nil {
 		return fmt.Errorf("binding %q already defined", key)
 	}
 	t.bindings[key] = handler
+	t.bindings[versionlessKey] = handler
 
 	return nil
 }
@@ -76,7 +89,11 @@ func (t *InMemory) Request(msg transport.Message) <-chan transport.ImmutableMess
 	resChan := make(chan transport.ImmutableMessage, 1)
 
 	// Build destination key for looking up the binding
-	key := fmt.Sprintf("%s/%s", msg.Receiver(), msg.ReceiverEndpoint())
+	version := msg.ReceiverVersion()
+	if version != "" {
+		version = "-" + version
+	}
+	key := fmt.Sprintf("%s%s/%s", msg.Receiver(), version, msg.ReceiverEndpoint())
 
 	// This is required to prevent go test -race from flagging this as a false-positive data race.
 	t.mutex.Lock()

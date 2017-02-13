@@ -15,8 +15,8 @@ import (
 func TestFactory(t *testing.T) {
 	f := Factory(&StaticConfig{})
 
-	m1 := f().(*circuitBreaker)
-	m2 := f().(*circuitBreaker)
+	m1 := f("").(*circuitBreaker)
+	m2 := f("").(*circuitBreaker)
 
 	if m1 == m2 {
 		t.Fatalf("expected Factory to return different instance")
@@ -59,8 +59,8 @@ func TestFactory(t *testing.T) {
 func TestSingletonFactory(t *testing.T) {
 	f := SingletonFactory(&StaticConfig{})
 
-	m1 := f().(*circuitBreaker)
-	m2 := f().(*circuitBreaker)
+	m1 := f("").(*circuitBreaker)
+	m2 := f("").(*circuitBreaker)
 
 	if m1 != m2 {
 		t.Fatalf("expected SingletonFactory to return the same instance")
