@@ -66,7 +66,7 @@ func TestRouter(t *testing.T) {
 
 		version := req.ReceiverVersion()
 		if version != expVersion {
-			t.Errorf("[spec %d] expected middlware to set receiver version %q; got %q", specIndex, expVersion, version)
+			t.Errorf("[spec %d] expected middleware to set receiver version %q; got %q", specIndex, expVersion, version)
 		}
 	}
 
@@ -81,7 +81,7 @@ func TestRouter(t *testing.T) {
 		},
 	)
 
-	<-time.After(100 * time.Millisecond)
+	<-time.After(500 * time.Millisecond)
 
 	// Reset RND
 	randValues = []float32{0, 0.2999, 0.6999, 0.8, 0.2, 0.9, 0.9999}
@@ -98,7 +98,7 @@ func TestRouter(t *testing.T) {
 
 		version := req.ReceiverVersion()
 		if version != expVersion {
-			t.Errorf("[spec %d] expected middlware to set receiver version %q; got %q", specIndex, expVersion, version)
+			t.Errorf("[spec %d] expected middleware to set receiver version %q; got %q", specIndex, expVersion, version)
 		}
 	}
 }
@@ -244,7 +244,7 @@ func TestWorkerCleanup(t *testing.T) {
 			"v0": "1.0",
 		},
 	)
-	<-time.After(100 * time.Millisecond)
+	<-time.After(500 * time.Millisecond)
 
 	expVersion := "v1"
 	req := transport.MakeGenericMessage()
@@ -256,6 +256,6 @@ func TestWorkerCleanup(t *testing.T) {
 
 	version := req.ReceiverVersion()
 	if version != expVersion {
-		t.Error("expected middlware not to update its routing weights after its finalizer gets called")
+		t.Error("expected middleware not to update its routing weights after its finalizer gets called")
 	}
 }
