@@ -10,7 +10,7 @@ import (
 )
 
 func TestInMemoryBindVersions(t *testing.T) {
-	tr := NewInMemory()
+	tr := New()
 	defer tr.Close()
 
 	handler := transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {})
@@ -33,7 +33,7 @@ func TestInMemoryBindVersions(t *testing.T) {
 }
 
 func TestInMemoryErrors(t *testing.T) {
-	tr := NewInMemory()
+	tr := New()
 	defer tr.Close()
 
 	// Send to unknown endpoint
@@ -77,7 +77,7 @@ func TestInMemoryErrors(t *testing.T) {
 }
 
 func TestInMemoryRPC(t *testing.T) {
-	tr := InMemoryTransportFactory()
+	tr := Factory()
 	defer tr.Close()
 
 	expHeaders := map[string]string{
@@ -207,7 +207,7 @@ func BenchmarkInMemory100Workers(b *testing.B) {
 }
 
 func benchInMemory(b *testing.B, workers int) {
-	tr := NewInMemory()
+	tr := New()
 	defer tr.Close()
 
 	payload := []byte("test payload")

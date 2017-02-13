@@ -372,7 +372,7 @@ func TestServer(t *testing.T) {
 
 	srv, err := New(
 		"test",
-		WithTransport(memory.NewInMemory()),
+		WithTransport(memory.New()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -446,7 +446,7 @@ func TestListenErrors(t *testing.T) {
 	srv, err := New(
 		"test",
 		WithVersion("v0"),
-		WithTransport(memory.NewInMemory()),
+		WithTransport(memory.New()),
 	)
 	if err != nil {
 		t.Fatal(err)

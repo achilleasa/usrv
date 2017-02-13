@@ -24,7 +24,7 @@ func TestClientOptionError(t *testing.T) {
 }
 
 func TestClientRequest(t *testing.T) {
-	tr := memory.NewInMemory()
+	tr := memory.New()
 	defer tr.Close()
 
 	expGreeting := "hello tester"
@@ -81,7 +81,7 @@ func TestClientRequest(t *testing.T) {
 }
 
 func TestClientRequestWithServerEndpointCtx(t *testing.T) {
-	tr := memory.NewInMemory()
+	tr := memory.New()
 	defer tr.Close()
 
 	expSender := "foo service"
@@ -161,7 +161,7 @@ func TestClientMiddlewareChain(t *testing.T) {
 	}()
 	ClearGlobalMiddlewareFactories()
 
-	tr := memory.NewInMemory()
+	tr := memory.New()
 	defer tr.Close()
 
 	expReceiver := "service"
@@ -253,7 +253,7 @@ func TestClientMiddlewareChain(t *testing.T) {
 }
 
 func TestClientMiddlewareThatAbortsRequestExecution(t *testing.T) {
-	tr := memory.NewInMemory()
+	tr := memory.New()
 	defer tr.Close()
 
 	logChan := make(chan string, 8)
@@ -293,7 +293,7 @@ func TestClientMiddlewareThatAbortsRequestExecution(t *testing.T) {
 }
 
 func TestClientErrors(t *testing.T) {
-	tr := memory.NewInMemory()
+	tr := memory.New()
 	defer tr.Close()
 
 	var invocation int32

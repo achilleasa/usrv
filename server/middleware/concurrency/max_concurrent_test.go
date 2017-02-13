@@ -23,7 +23,7 @@ func TestSingletonFactory(t *testing.T) {
 		SingletonFactory(&StaticConfig{1, 100 * time.Millisecond}),
 	}
 
-	tr := memory.NewInMemory()
+	tr := memory.New()
 	defer tr.Close()
 	srv, err := server.New(
 		"test",
@@ -166,7 +166,7 @@ func TestFactory(t *testing.T) {
 		Factory(&StaticConfig{1, 100 * time.Millisecond}),
 	}
 
-	tr := memory.NewInMemory()
+	tr := memory.New()
 	defer tr.Close()
 	srv, err := server.New(
 		"test",
