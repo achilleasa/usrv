@@ -1,3 +1,4 @@
+// Package http provides a usrv transport over HTTP/HTTPS.
 package http
 
 import (
@@ -53,7 +54,7 @@ var (
 )
 
 var (
-	_ transport.Transport = &HTTP{}
+	_ transport.Transport = &Transport{}
 )
 
 // Binding encapsulates the details of a service/endpoint combination and
@@ -125,7 +126,7 @@ func (rm *requestMakerThatAlwaysFails) Do(req *nethttp.Request) (*nethttp.Respon
 	return nil, rm.err
 }
 
-// HTTP implements a usrv transport over HTTP.
+// Transport implements a usrv transport over HTTP/HTTPS.
 //
 // Bindings for this transport must be defined before a call to Dial(). Any
 // attempt to define a binding after the transport has been dialed will result
@@ -190,7 +191,7 @@ func (rm *requestMakerThatAlwaysFails) Do(req *nethttp.Request) (*nethttp.Respon
 // or you want to test against a locally running server, you can override the
 // URLBuilder field with a custom ServiceURLBuilder implementation prior to calling
 // Dial().
-type HTTP struct {
+type Transport struct {
 	// Internal locks.
 	mutex  sync.Mutex
 	dialed bool
@@ -226,9 +227,9 @@ type HTTP struct {
 	URLBuilder ServiceURLBuilder
 }
 
-// NewHTTP creates a new http transport instance.
-func NewHTTP() *HTTP {
-	t := &HTTP{
+// New creates a new http transport instance.
+func New() *Transport {
+	t := &Transport{
 		bindings:      make([]binding, 0),
 		config:        config.MapFlag("transport/http"),
 		protocol:      config.StringFlag("transport/http/protocol"),
@@ -243,13 +244,13 @@ func NewHTTP() *HTTP {
 
 	t.createClient()
 	go t.configChangeMonitor()
-	setFinalizer(t, func(t *HTTP) { close(t.watcherDoneChan) })
+	setFinalizer(t, func(t *Transport) { close(t.watcherDoneChan) })
 
 	return t
 }
 
 // Dial connects the transport and starts relaying messages.
-func (t *HTTP) Dial() error {
+func (t *Transport) Dial() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -257,7 +258,7 @@ func (t *HTTP) Dial() error {
 }
 
 // Close shuts down the transport.
-func (t *HTTP) Close() error {
+func (t *Transport) Close() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -286,7 +287,7 @@ func (t *HTTP) Close() error {
 //
 // Bindings can only be established on a closed transport. Calls to Bind
 // after a call to Dial will result in an error.
-func (t *HTTP) Bind(version, service, endpoint string, handler transport.Handler) error {
+func (t *Transport) Bind(version, service, endpoint string, handler transport.Handler) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -312,7 +313,7 @@ func (t *HTTP) Bind(version, service, endpoint string, handler transport.Handler
 
 // Request performs an RPC and returns back a read-only channel for
 // receiving the result.
-func (t *HTTP) Request(reqMsg transport.Message) <-chan transport.ImmutableMessage {
+func (t *Transport) Request(reqMsg transport.Message) <-chan transport.ImmutableMessage {
 	resChan := make(chan transport.ImmutableMessage, 1)
 
 	go func() {
@@ -409,7 +410,7 @@ func (t *HTTP) Request(reqMsg transport.Message) <-chan transport.ImmutableMessa
 }
 
 // The actual implementation of dial. Must be invoked after acquiring the mutex.
-func (t *HTTP) dial() error {
+func (t *Transport) dial() error {
 
 	// Check that we support the requested protocol
 	var err error
@@ -481,7 +482,7 @@ func (t *HTTP) dial() error {
 
 // ConfigChangeMonitor watches for configuration changes updates the transport
 // client and triggers a redial if the transport was already dialed
-func (t *HTTP) configChangeMonitor() {
+func (t *Transport) configChangeMonitor() {
 	for {
 		select {
 		case <-t.watcherDoneChan:
@@ -505,7 +506,7 @@ func (t *HTTP) configChangeMonitor() {
 
 // Mux returns the http server request handler that is invoked (in a goroutine)
 // for each incoming HTTP request.
-func (t *HTTP) mux(strictMode bool) func(nethttp.ResponseWriter, *nethttp.Request) {
+func (t *Transport) mux(strictMode bool) func(nethttp.ResponseWriter, *nethttp.Request) {
 	return func(rw nethttp.ResponseWriter, httpReq *nethttp.Request) {
 		defer httpReq.Body.Close()
 
@@ -605,7 +606,7 @@ func (t *HTTP) mux(strictMode bool) func(nethttp.ResponseWriter, *nethttp.Reques
 
 // CreateClient generates a new http client instance and atomically replaces the
 // one present in the transport.
-func (t *HTTP) createClient() error {
+func (t *Transport) createClient() error {
 	t.clientMutex.Lock()
 	defer t.clientMutex.Unlock()
 
@@ -671,7 +672,7 @@ func (t *HTTP) createClient() error {
 
 // BuildTLSConfig validates the TLS configuration options and generates a TLS
 // configuration to be used by a client or a server
-func (t *HTTP) buildTLSConfig() (tlsConfig *tls.Config, err error) {
+func (t *Transport) buildTLSConfig() (tlsConfig *tls.Config, err error) {
 	// Verify TLS settings and populate tls config
 	tlsCert := t.tlsCert.Get()
 	tlsKey := t.tlsKey.Get()
@@ -701,12 +702,12 @@ func (t *HTTP) buildTLSConfig() (tlsConfig *tls.Config, err error) {
 	return tlsConfig, nil
 }
 
-// HTTPTransportFactory is a factory for creating usrv transport instances
+// Factory is a factory for creating usrv transport instances
 // whose concrete implementation is the HTTP transport. This function behaves
-// exactly the same as NewHTTP() but returns back a Transport interface allowing
+// exactly the same as New() but returns back a Transport interface allowing
 // it to be used as usrv.DefaultTransportFactory.
-func HTTPTransportFactory() transport.Transport {
-	return NewHTTP()
+func Factory() transport.Transport {
+	return New()
 }
 
 func init() {

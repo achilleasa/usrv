@@ -20,7 +20,7 @@ import (
 )
 
 func TestHTTPErrors(t *testing.T) {
-	tr := NewHTTP()
+	tr := New()
 	tr.port.Set(9901)
 	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9901"}
 	defer tr.Close()
@@ -114,7 +114,7 @@ func TestHTTPErrors(t *testing.T) {
 }
 
 func TestTLSErrors(t *testing.T) {
-	tr := NewHTTP()
+	tr := New()
 	tr.port.Set(9444)
 	tr.protocol.Set("https")
 
@@ -225,7 +225,7 @@ func TestTLSErrors(t *testing.T) {
 }
 
 func TestHTTPErrorPropagation(t *testing.T) {
-	tr := NewHTTP()
+	tr := New()
 	tr.port.Set(9902)
 	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9902"}
 	defer tr.Close()
@@ -288,7 +288,7 @@ func TestHTTPErrorPropagation(t *testing.T) {
 }
 
 func TestRPCOverHTTP(t *testing.T) {
-	tr := NewHTTP()
+	tr := New()
 	tr.port.Set(9903)
 	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9903"}
 	defer tr.Close()
@@ -421,7 +421,7 @@ func TestRPCOverHTTPS(t *testing.T) {
 	defer os.Remove(keyFile)
 
 	// By default, the http provider will add the certificate to the system's certificate pool.
-	tr := NewHTTP()
+	tr := New()
 	tr.port.Set(9443)
 	tr.protocol.Set("https")
 	tr.tlsStrictMode.Set(true)
@@ -496,7 +496,7 @@ func TestHTTPReconfiguration(t *testing.T) {
 		"tls/key":           keyFile,
 	})
 
-	tr := NewHTTP()
+	tr := New()
 	tr.URLBuilder = newDefaultURLBuilder()
 	defer tr.Close()
 
@@ -581,8 +581,8 @@ func TestHTTPClientReconfiguration(t *testing.T) {
 		"tls/key":           keyFile,
 	})
 
-	trServer := HTTPTransportFactory()
-	trClient := NewHTTP()
+	trServer := Factory()
+	trClient := New()
 	trClient.URLBuilder = newDefaultURLBuilder()
 	defer trServer.Close()
 	defer trClient.Close()
@@ -624,12 +624,12 @@ func TestHTTPConfigWorkerCleanup(t *testing.T) {
 	defer func() {
 		setFinalizer = origSetFinalizer
 	}()
-	var finalizer func(*HTTP)
+	var finalizer func(*Transport)
 	setFinalizer = func(_ interface{}, cb interface{}) {
-		finalizer = cb.(func(*HTTP))
+		finalizer = cb.(func(*Transport))
 	}
 
-	tr := NewHTTP()
+	tr := New()
 	finalizer(tr)
 	time.After(500 * time.Millisecond)
 
