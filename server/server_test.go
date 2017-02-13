@@ -14,7 +14,7 @@ import (
 	"github.com/achilleasa/usrv/encoding"
 	"github.com/achilleasa/usrv/encoding/json"
 	"github.com/achilleasa/usrv/transport"
-	"github.com/achilleasa/usrv/transport/provider"
+	"github.com/achilleasa/usrv/transport/memory"
 )
 
 func TestOptionsThatReturnErrors(t *testing.T) {
@@ -372,7 +372,7 @@ func TestServer(t *testing.T) {
 
 	srv, err := New(
 		"test",
-		WithTransport(provider.NewInMemory()),
+		WithTransport(memory.New()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -446,7 +446,7 @@ func TestListenErrors(t *testing.T) {
 	srv, err := New(
 		"test",
 		WithVersion("v0"),
-		WithTransport(provider.NewInMemory()),
+		WithTransport(memory.New()),
 	)
 	if err != nil {
 		t.Fatal(err)

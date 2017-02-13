@@ -10,7 +10,7 @@ type Option func(s *Client) error
 
 // WithTransport configures the client to use a specific transport instead
 // of the default transport.
-func WithTransport(transport transport.Transport) Option {
+func WithTransport(transport transport.Provider) Option {
 	return func(s *Client) error {
 		s.transport = transport
 		return nil

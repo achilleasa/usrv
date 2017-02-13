@@ -1,5 +1,5 @@
-// Package provider contains implementations for the built-in usrv transports.
-package provider
+// Package memory provides an in-memory usrv transport using go channels.
+package memory
 
 import (
 	"fmt"
@@ -9,28 +9,28 @@ import (
 )
 
 var (
-	_ transport.Transport = &InMemory{}
+	_ transport.Provider = &Transport{}
 )
 
-// InMemory implements the in-memory transport. It uses channels and go-routines
+// Transport implements the in-memory transport. It uses channels and go-routines
 // to facilitate the exchange of messages making it very easy to use when
 // writing tests.
-type InMemory struct {
+type Transport struct {
 	mutex  sync.Mutex
 	dialed bool
 
 	bindings map[string]transport.Handler
 }
 
-// NewInMemory creates a new in-memory transport instance.
-func NewInMemory() *InMemory {
-	return &InMemory{
+// New creates a new in-memory transport instance.
+func New() *Transport {
+	return &Transport{
 		bindings: make(map[string]transport.Handler, 0),
 	}
 }
 
 // Dial connects the transport and starts relaying messages.
-func (t *InMemory) Dial() error {
+func (t *Transport) Dial() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -39,7 +39,7 @@ func (t *InMemory) Dial() error {
 }
 
 // Close shuts down the transport.
-func (t *InMemory) Close() error {
+func (t *Transport) Close() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -60,7 +60,7 @@ func (t *InMemory) Close() error {
 //
 // Bindings can only be established on a closed transport. Calls to Bind
 // after a call to Dial will result in an error.
-func (t *InMemory) Bind(version, service, endpoint string, handler transport.Handler) error {
+func (t *Transport) Bind(version, service, endpoint string, handler transport.Handler) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -85,7 +85,7 @@ func (t *InMemory) Bind(version, service, endpoint string, handler transport.Han
 
 // Request performs an RPC and returns back a read-only channel for
 // receiving the result.
-func (t *InMemory) Request(msg transport.Message) <-chan transport.ImmutableMessage {
+func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMessage {
 	resChan := make(chan transport.ImmutableMessage, 1)
 
 	// Build destination key for looking up the binding
@@ -120,10 +120,10 @@ func (t *InMemory) Request(msg transport.Message) <-chan transport.ImmutableMess
 	return resChan
 }
 
-// InMemoryTransportFactory is a factory for creating usrv transport instances
+// Factory is a factory for creating usrv transport instances
 // whose concrete implementation is the InMemory transport. This function behaves
-// exactly the same as NewInMemory() but returns back a Transport interface allowing
+// exactly the same as New() but returns back a Transport interface allowing
 // it to be used as usrv.DefaultTransportFactory.
-func InMemoryTransportFactory() transport.Transport {
-	return NewInMemory()
+func Factory() transport.Provider {
+	return New()
 }

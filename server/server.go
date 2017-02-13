@@ -55,7 +55,7 @@ type Server struct {
 	mutex sync.Mutex
 
 	// The transport used by the server.
-	transport transport.Transport
+	transport transport.Provider
 
 	// A codec instance for handling marshaling/unmarshaling.
 	codec encoding.Codec

@@ -4,7 +4,7 @@ import (
 	"github.com/achilleasa/usrv/encoding"
 	"github.com/achilleasa/usrv/encoding/json"
 	"github.com/achilleasa/usrv/transport"
-	"github.com/achilleasa/usrv/transport/provider"
+	"github.com/achilleasa/usrv/transport/http"
 )
 
 var (
@@ -13,7 +13,7 @@ var (
 	//
 	// When usrv is imported, DefaultTransportFactory is set up to return
 	// HTTP transport instances.
-	DefaultTransportFactory func() transport.Transport
+	DefaultTransportFactory func() transport.Provider
 
 	// DefaultCodecFactory is a function that returns back a new
 	// instance of the default Codec used for marshaling and unmarshaling
@@ -25,6 +25,6 @@ var (
 )
 
 func init() {
-	DefaultTransportFactory = provider.HTTPTransportFactory
+	DefaultTransportFactory = http.Factory
 	DefaultCodecFactory = json.Codec
 }

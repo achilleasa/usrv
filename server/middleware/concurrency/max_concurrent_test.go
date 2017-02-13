@@ -12,7 +12,7 @@ import (
 	"github.com/achilleasa/usrv/config/store"
 	"github.com/achilleasa/usrv/server"
 	"github.com/achilleasa/usrv/transport"
-	"github.com/achilleasa/usrv/transport/provider"
+	"github.com/achilleasa/usrv/transport/memory"
 )
 
 func TestSingletonFactory(t *testing.T) {
@@ -23,7 +23,7 @@ func TestSingletonFactory(t *testing.T) {
 		SingletonFactory(&StaticConfig{1, 100 * time.Millisecond}),
 	}
 
-	tr := provider.NewInMemory()
+	tr := memory.New()
 	defer tr.Close()
 	srv, err := server.New(
 		"test",
@@ -166,7 +166,7 @@ func TestFactory(t *testing.T) {
 		Factory(&StaticConfig{1, 100 * time.Millisecond}),
 	}
 
-	tr := provider.NewInMemory()
+	tr := memory.New()
 	defer tr.Close()
 	srv, err := server.New(
 		"test",
