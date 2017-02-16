@@ -38,10 +38,12 @@ type Provider interface {
 	//
 	// Transports may implement versioning for bindings in order to support
 	// complex deployment flows such as blue-green deployments.
-	//
-	// Bindings can only be established on a closed transport. Calls to Bind
-	// after a call to Dial will result in an error.
 	Bind(version, service, endpoint string, handler Handler) error
+
+	// Unbind removes a message handler previously registered by a call to Bind().
+	// Calling Unbind with a (version, service, endpoint) tuple that is not
+	// registered has no effect.
+	Unbind(version, service, endpoint string)
 
 	// Request performs an RPC and returns back a read-only channel for
 	// receiving the result.
