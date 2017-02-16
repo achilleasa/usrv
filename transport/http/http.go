@@ -62,14 +62,11 @@ var (
 type binding struct {
 	handler transport.Handler
 
-	// The request path that for this binding. It uses the following pattern
-	// "/:service/:endpoint"
-	mountPoint string
-
 	// The service and endpoint combination for this binding. We store this
-	// separately for quickly populating incoming message fields.
+	// separately for quickly populating incoming message fields./Request
 	service  string
 	endpoint string
+	version  string
 }
 
 // ServiceURLBuilder defines an interface for mapping a version, service and endpoint
@@ -193,11 +190,11 @@ func (rm *requestMakerThatAlwaysFails) Do(req *nethttp.Request) (*nethttp.Respon
 // Dial().
 type Transport struct {
 	// Internal locks.
-	mutex  sync.Mutex
-	dialed bool
+	rwMutex sync.RWMutex
+	dialed  bool
 
-	// The list of declared bindings.
-	bindings []binding
+	// The declared bindings.
+	bindings map[string]*binding
 
 	// A channel which is closed to notify the config watcher to exit
 	watcherDoneChan chan struct{}
@@ -220,9 +217,6 @@ type Transport struct {
 	// A client implementation that can perform http requests.
 	client requestMaker
 
-	// A RW mutex allowing access to the client
-	clientMutex sync.RWMutex
-
 	// URLBuilder can be overriden to implement custom service discovery rules.
 	URLBuilder ServiceURLBuilder
 }
@@ -230,7 +224,7 @@ type Transport struct {
 // New creates a new http transport instance.
 func New() *Transport {
 	t := &Transport{
-		bindings:      make([]binding, 0),
+		bindings:      make(map[string]*binding, 0),
 		config:        config.MapFlag("transport/http"),
 		protocol:      config.StringFlag("transport/http/protocol"),
 		port:          config.Uint32Flag("transport/http/port"),
@@ -251,16 +245,16 @@ func New() *Transport {
 
 // Dial connects the transport and starts relaying messages.
 func (t *Transport) Dial() error {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwMutex.Lock()
+	defer t.rwMutex.Unlock()
 
 	return t.dial()
 }
 
 // Close shuts down the transport.
 func (t *Transport) Close() error {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwMutex.Lock()
+	defer t.rwMutex.Unlock()
 
 	if !t.dialed {
 		return transport.ErrTransportClosed
@@ -284,31 +278,39 @@ func (t *Transport) Close() error {
 // to a service with a particular version is handled at the DNS level. Attempting
 // to define multiple versions for the same service and endpoint tuple will cause
 // an error to be returned.
-//
-// Bindings can only be established on a closed transport. Calls to Bind
-// after a call to Dial will result in an error.
 func (t *Transport) Bind(version, service, endpoint string, handler transport.Handler) error {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-
-	if t.dialed {
-		return transport.ErrTransportAlreadyDialed
-	}
+	t.rwMutex.Lock()
+	defer t.rwMutex.Unlock()
 
 	mountPoint := fmt.Sprintf("/%s/%s", service, endpoint)
-	for _, existingBinding := range t.bindings {
-		if existingBinding.mountPoint == mountPoint {
-			return fmt.Errorf("binding %q already defined", strings.TrimLeft(mountPoint, "/"))
-		}
+	if _, exists := t.bindings[mountPoint]; exists {
+		return fmt.Errorf(
+			"binding (version: %q, service: %q, endpoint: %q) already defined",
+			version,
+			service,
+			endpoint,
+		)
 	}
-	t.bindings = append(t.bindings, binding{
-		handler:    handler,
-		mountPoint: mountPoint,
-		service:    service,
-		endpoint:   endpoint,
-	})
+
+	t.bindings[mountPoint] = &binding{
+		handler:  handler,
+		service:  service,
+		endpoint: endpoint,
+		version:  version,
+	}
 
 	return nil
+}
+
+// Unbind removes a message handler previously registered by a call to Bind().
+// Calling Unbind with a (version, service, endpoint) tuple that is not
+// registered has no effect.
+func (t *Transport) Unbind(version, service, endpoint string) {
+	t.rwMutex.Lock()
+	defer t.rwMutex.Unlock()
+
+	mountPoint := fmt.Sprintf("/%s/%s", service, endpoint)
+	delete(t.bindings, mountPoint)
 }
 
 // Request performs an RPC and returns back a read-only channel for
@@ -323,9 +325,6 @@ func (t *Transport) Request(reqMsg transport.Message) <-chan transport.Immutable
 		resMsg.SenderEndpointField = reqMsg.ReceiverEndpoint()
 		resMsg.ReceiverField = reqMsg.Sender()
 		resMsg.ReceiverEndpointField = reqMsg.SenderEndpoint()
-
-		// Acquire read lock
-		t.clientMutex.RLock()
 
 		// Map request message to an HTTP request
 		payload, _ := reqMsg.Payload()
@@ -353,10 +352,9 @@ func (t *Transport) Request(reqMsg transport.Message) <-chan transport.Immutable
 		httpReq.Header.Set(headerPrefix+senderEndpointHeader, reqMsg.SenderEndpoint())
 
 		// Exec request
+		t.rwMutex.RLock()
 		httpRes, err := t.client.Do(httpReq)
-
-		// Release lock
-		t.clientMutex.RUnlock()
+		t.rwMutex.RUnlock()
 
 		if httpRes != nil {
 			defer httpRes.Body.Close()
@@ -409,9 +407,8 @@ func (t *Transport) Request(reqMsg transport.Message) <-chan transport.Immutable
 	return resChan
 }
 
-// The actual implementation of dial. Must be invoked after acquiring the mutex.
+// dial the transport. Must be invoked after acquiring the rwMutex.
 func (t *Transport) dial() error {
-
 	// Check that we support the requested protocol
 	var err error
 	var tlsConfig *tls.Config
@@ -480,7 +477,7 @@ func (t *Transport) dial() error {
 	return nil
 }
 
-// ConfigChangeMonitor watches for configuration changes updates the transport
+// configChangeMonitor watches for configuration changes updates the transport
 // client and triggers a redial if the transport was already dialed
 func (t *Transport) configChangeMonitor() {
 	for {
@@ -491,20 +488,20 @@ func (t *Transport) configChangeMonitor() {
 		}
 
 		// If the transport is dialed force a redial; this also updates the client
-		t.mutex.Lock()
+		t.rwMutex.Lock()
 		if t.dialed {
 			t.dial()
-			t.mutex.Unlock()
+			t.rwMutex.Unlock()
 			continue
 		}
 
 		// Just update the client
 		t.createClient()
-		t.mutex.Unlock()
+		t.rwMutex.Unlock()
 	}
 }
 
-// Mux returns the http server request handler that is invoked (in a goroutine)
+// mux returns the http server request handler that is invoked (in a goroutine)
 // for each incoming HTTP request.
 func (t *Transport) mux(strictMode bool) func(nethttp.ResponseWriter, *nethttp.Request) {
 	return func(rw nethttp.ResponseWriter, httpReq *nethttp.Request) {
@@ -521,95 +518,93 @@ func (t *Transport) mux(strictMode bool) func(nethttp.ResponseWriter, *nethttp.R
 		}
 
 		// Lookup binding by matching the request path to a binding mountPoint
-		for _, binding := range t.bindings {
-			if binding.mountPoint != httpReq.URL.Path {
-				continue
-			}
+		t.rwMutex.RLock()
+		binding, exists := t.bindings[httpReq.URL.Path]
+		t.rwMutex.RUnlock()
 
-			reqMsg := transport.MakeGenericMessage()
-			reqMsg.ReceiverField = binding.service
-			reqMsg.ReceiverEndpointField = binding.endpoint
-			reqMsg.PayloadField, reqMsg.ErrField = readAll(httpReq.Body)
-			if reqMsg.ErrField != nil {
-				rw.Header().Set(headerPrefix+errorHeader, reqMsg.ErrField.Error())
-				rw.WriteHeader(nethttp.StatusInternalServerError)
-				return
-			}
-
-			// Filter request headers and extract the ones we need
-			for name, values := range httpReq.Header {
-				if !strings.HasPrefix(name, headerPrefix) || values[0] == "" {
-					continue
-				}
-
-				// Strip the header prefix and check for reserved headers
-				name = name[headerPrefixLen:]
-				switch name {
-				case requestIDHeader:
-					reqMsg.IDField = values[0]
-				case senderHeader:
-					reqMsg.SenderField = values[0]
-				case senderEndpointHeader:
-					reqMsg.SenderEndpointField = values[0]
-				default:
-					reqMsg.HeadersField[name] = values[0]
-				}
-			}
-
-			// Setup return message by inverting from and to
-			resMsg := transport.MakeGenericMessage()
-			resMsg.SenderField = binding.service
-			resMsg.SenderEndpointField = binding.endpoint
-			resMsg.ReceiverField = reqMsg.SenderField
-			resMsg.ReceiverEndpointField = reqMsg.SenderEndpointField
-
-			// Execute handler
-			binding.handler.Process(reqMsg, resMsg)
-
-			// Check for common errors and map them to a HTTP status code
-			switch resMsg.ErrField {
-			case transport.ErrNotFound:
-				rw.WriteHeader(nethttp.StatusNotFound)
-				return
-			case transport.ErrTimeout:
-				rw.WriteHeader(nethttp.StatusRequestTimeout)
-				return
-			case transport.ErrNotAuthorized:
-				rw.WriteHeader(nethttp.StatusUnauthorized)
-				return
-			default:
-				rw.Header().Set(headerPrefix+errorHeader, resMsg.ErrField.Error())
-				rw.WriteHeader(nethttp.StatusInternalServerError)
-				return
-			case nil:
-			}
-
-			// Export message headers as usrv-tagged headers
-			for name, value := range resMsg.HeadersField {
-				rw.Header().Set(headerPrefix+name, value)
-			}
-			rw.Header().Set(requestIDHeader, resMsg.IDField)
-
-			if resMsg.PayloadField != nil {
-				rw.Write(resMsg.PayloadField)
-			}
-
-			reqMsg.Close()
-			resMsg.Close()
+		// No match; return a 404 back
+		if !exists {
+			rw.WriteHeader(nethttp.StatusNotFound)
 			return
 		}
 
-		// No match; return a 404 back
-		rw.WriteHeader(nethttp.StatusNotFound)
+		reqMsg := transport.MakeGenericMessage()
+		reqMsg.ReceiverField = binding.service
+		reqMsg.ReceiverEndpointField = binding.endpoint
+		reqMsg.ReceiverVersionField = binding.version
+		reqMsg.PayloadField, reqMsg.ErrField = readAll(httpReq.Body)
+		if reqMsg.ErrField != nil {
+			rw.Header().Set(headerPrefix+errorHeader, reqMsg.ErrField.Error())
+			rw.WriteHeader(nethttp.StatusInternalServerError)
+			return
+		}
+
+		// Filter request headers and extract the ones we need
+		for name, values := range httpReq.Header {
+			if !strings.HasPrefix(name, headerPrefix) || values[0] == "" {
+				continue
+			}
+
+			// Strip the header prefix and check for reserved headers
+			name = name[headerPrefixLen:]
+			switch name {
+			case requestIDHeader:
+				reqMsg.IDField = values[0]
+			case senderHeader:
+				reqMsg.SenderField = values[0]
+			case senderEndpointHeader:
+				reqMsg.SenderEndpointField = values[0]
+			default:
+				reqMsg.HeadersField[name] = values[0]
+			}
+		}
+
+		// Setup return message by inverting from and to
+		resMsg := transport.MakeGenericMessage()
+		resMsg.SenderField = binding.service
+		resMsg.SenderEndpointField = binding.endpoint
+		resMsg.ReceiverField = reqMsg.SenderField
+		resMsg.ReceiverEndpointField = reqMsg.SenderEndpointField
+
+		// Execute handler
+		binding.handler.Process(reqMsg, resMsg)
+
+		// Check for common errors and map them to a HTTP status code
+		switch resMsg.ErrField {
+		case transport.ErrNotFound:
+			rw.WriteHeader(nethttp.StatusNotFound)
+			return
+		case transport.ErrTimeout:
+			rw.WriteHeader(nethttp.StatusRequestTimeout)
+			return
+		case transport.ErrNotAuthorized:
+			rw.WriteHeader(nethttp.StatusUnauthorized)
+			return
+		default:
+			rw.Header().Set(headerPrefix+errorHeader, resMsg.ErrField.Error())
+			rw.WriteHeader(nethttp.StatusInternalServerError)
+			return
+		case nil:
+		}
+
+		// Export message headers as usrv-tagged headers
+		for name, value := range resMsg.HeadersField {
+			rw.Header().Set(headerPrefix+name, value)
+		}
+		rw.Header().Set(requestIDHeader, resMsg.IDField)
+
+		if resMsg.PayloadField != nil {
+			rw.Write(resMsg.PayloadField)
+		}
+
+		reqMsg.Close()
+		resMsg.Close()
 	}
 }
 
-// CreateClient generates a new http client instance and atomically replaces the
-// one present in the transport.
+// createClient generates a new http client instance. This method must be called
+// while holding the write mutex.
 func (t *Transport) createClient() error {
-	t.clientMutex.Lock()
-	defer t.clientMutex.Unlock()
-
 	if t.URLBuilder == nil {
 		t.URLBuilder = newDefaultURLBuilder()
 	}
@@ -670,7 +665,7 @@ func (t *Transport) createClient() error {
 	return nil
 }
 
-// BuildTLSConfig validates the TLS configuration options and generates a TLS
+// buildTLSConfig validates the TLS configuration options and generates a TLS
 // configuration to be used by a client or a server
 func (t *Transport) buildTLSConfig() (tlsConfig *tls.Config, err error) {
 	// Verify TLS settings and populate tls config
