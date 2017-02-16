@@ -473,7 +473,7 @@ func TestListenErrors(t *testing.T) {
 	}
 
 	err = srv.Listen()
-	expErrorMsg := `binding "test-v0/test" already defined`
+	expErrorMsg := `binding (version: "v0", service: "test", endpoint: "test") already defined`
 	if err == nil || (err != nil && err.Error() != expErrorMsg) {
 		t.Fatalf("expected error %q; got %v", expErrorMsg, err)
 	}
@@ -538,6 +538,9 @@ func (tr *testTransportThatFailsDialing) Request(_ transport.Message) <-chan tra
 
 func (tr *testTransportThatFailsDialing) Bind(_, _, _ string, _ transport.Handler) error {
 	return nil
+}
+
+func (tr *testTransportThatFailsDialing) Unbind(_, _, _ string) {
 }
 
 func (tr *testTransportThatFailsDialing) Dial() error {

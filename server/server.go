@@ -178,12 +178,16 @@ func (s *Server) Close() {
 	// Wait for the server to ack the close request
 	<-s.doneChan
 
-	// Cleanup the channel
+	// Cleanup
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+
+	for _, endpoint := range s.endpoints {
+		s.transport.Unbind(s.serviceVersion, s.serviceName, endpoint.Name)
+	}
+
 	close(s.doneChan)
 	s.doneChan = nil
-
+	s.mutex.Unlock()
 }
 
 // setDefaults applies default settings for fields not set by a server option.
