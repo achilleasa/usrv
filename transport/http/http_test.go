@@ -12,6 +12,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,7 +32,7 @@ func TestHTTPErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
-	expError := `binding "service/endpoint" already defined`
+	expError := `binding (version: "", service: "service", endpoint: "endpoint") already defined`
 	if err == nil || err.Error() != expError {
 		t.Fatalf("expected to get error %q; got %v", expError, err)
 	}
@@ -74,9 +75,9 @@ func TestHTTPErrors(t *testing.T) {
 	}
 
 	// Test bind after dialing
-	err = tr.Bind("", "service", "endpoint1", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
-	if err != transport.ErrTransportAlreadyDialed {
-		t.Fatalf("expected to get error %q; got %v", transport.ErrTransportAlreadyDialed, err)
+	err = tr.Bind("", "service", "endpoint2", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// Test error while creating client request
@@ -121,7 +122,7 @@ func TestTLSErrors(t *testing.T) {
 	// Test invalid verify mode
 	tr.tlsVerify.Set("bogus")
 	expError := errInvalidVerifyMode
-	err := tr.createClient()
+	err := createAtomicClient(tr)
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
 	}
@@ -130,7 +131,7 @@ func TestTLSErrors(t *testing.T) {
 	tr.tlsVerify.Set(tlsVerifyAddToCertPool)
 	expError = errMissingCertificate
 	tr.tlsCert.Set("")
-	err = tr.createClient()
+	err = createAtomicClient(tr)
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
 	}
@@ -144,7 +145,7 @@ func TestTLSErrors(t *testing.T) {
 	// Missing certificate key file option
 	tr.tlsCert.Set("foo")
 	tr.tlsKey.Set("")
-	err = tr.createClient()
+	err = createAtomicClient(tr)
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
 	}
@@ -159,7 +160,7 @@ func TestTLSErrors(t *testing.T) {
 	loadX509KeyPair = func(_, _ string) (tls.Certificate, error) {
 		return tls.Certificate{}, expError
 	}
-	err = tr.createClient()
+	err = createAtomicClient(tr)
 	loadX509KeyPair = origLoadX509KeyPair
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
@@ -175,7 +176,7 @@ func TestTLSErrors(t *testing.T) {
 	systemCertPool = func() (*x509.CertPool, error) {
 		return nil, expError
 	}
-	err = tr.createClient()
+	err = createAtomicClient(tr)
 	systemCertPool = origSystemCertPool
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
@@ -187,7 +188,7 @@ func TestTLSErrors(t *testing.T) {
 	readFile = func(_ string) ([]byte, error) {
 		return nil, expError
 	}
-	err = tr.createClient()
+	err = createAtomicClient(tr)
 	defer func() {
 		readFile = origReadFile
 	}()
@@ -200,7 +201,7 @@ func TestTLSErrors(t *testing.T) {
 		return []byte("invalid"), nil
 	}
 	expError = errAddCertificateToPool
-	err = tr.createClient()
+	err = createAtomicClient(tr)
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
 	}
@@ -287,6 +288,55 @@ func TestHTTPErrorPropagation(t *testing.T) {
 	}
 }
 
+func TestConcurrentRPCOverHTTP(t *testing.T) {
+	tr := New()
+	tr.port.Set(9906)
+	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9906"}
+	defer tr.Close()
+
+	handleRPC := func(req transport.ImmutableMessage, res transport.Message) {
+		res.SetPayload([]byte("hello back!"), nil)
+	}
+
+	err := tr.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Bind after dialing
+	err = tr.Bind("", "toService", "toEndpoint", transport.HandlerFunc(handleRPC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := newMessage("fromService/fromEndpoint", "toService/toEndpoint")
+	defer req.Close()
+	req.SetPayload([]byte("hello"), nil)
+
+	expPayload := "hello back!"
+	numReqs := 100
+	var wg sync.WaitGroup
+	wg.Add(numReqs)
+	for i := 0; i < numReqs; i++ {
+		go func(reqId int) {
+			defer wg.Done()
+			resChan := tr.Request(req)
+			res := <-resChan
+
+			payload, err := res.Payload()
+			if err != nil {
+				t.Errorf("[req %d] got error %v", reqId, err)
+				return
+			}
+			if string(payload) != expPayload {
+				t.Errorf("[req %d] expected payload to be %q; got %q", reqId, expPayload, string(payload))
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
 func TestRPCOverHTTP(t *testing.T) {
 	tr := New()
 	tr.port.Set(9903)
@@ -353,12 +403,13 @@ func TestRPCOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = tr.Bind("", "toService", "toEndpoint", transport.HandlerFunc(handleRPC))
+	err = tr.Dial()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = tr.Dial()
+	// Bind after dialing
+	err = tr.Bind("", "toService", "toEndpoint", transport.HandlerFunc(handleRPC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,6 +463,17 @@ func TestRPCOverHTTP(t *testing.T) {
 	headerValue := headers["User-Header"]
 	if headerValue != expHeaderValue {
 		t.Errorf("expected custom response header to contain %q; got %q", expHeaderValue, headerValue)
+	}
+
+	// Unbind endpoint (second Unbind should be a no-op); following calls to this endpoint should fail with ErrNotFound
+	tr.Unbind("", "toService", "toEndpoint")
+	tr.Unbind("", "toService", "toEndpoint")
+
+	resChan = tr.Request(req)
+	res = <-resChan
+	_, err = res.Payload()
+	if err != transport.ErrNotFound {
+		t.Errorf("expected to get ErrNotFound; got %v", err)
 	}
 }
 
@@ -766,4 +828,12 @@ func newMessage(from, to string) transport.Message {
 	m.ReceiverEndpointField = toFields[1]
 
 	return m
+}
+
+// createAtomicClient calls tr.createAtomicClient while holding the lock.
+func createAtomicClient(tr *Transport) error {
+	tr.rwMutex.Lock()
+	defer tr.rwMutex.Unlock()
+
+	return tr.createClient()
 }

@@ -16,8 +16,8 @@ var (
 // to facilitate the exchange of messages making it very easy to use when
 // writing tests.
 type Transport struct {
-	mutex  sync.Mutex
-	dialed bool
+	rwMutex sync.RWMutex
+	dialed  bool
 
 	bindings map[string]transport.Handler
 }
@@ -31,8 +31,8 @@ func New() *Transport {
 
 // Dial connects the transport and starts relaying messages.
 func (t *Transport) Dial() error {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwMutex.Lock()
+	defer t.rwMutex.Unlock()
 
 	t.dialed = true
 	return nil
@@ -40,8 +40,8 @@ func (t *Transport) Dial() error {
 
 // Close shuts down the transport.
 func (t *Transport) Close() error {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwMutex.Lock()
+	defer t.rwMutex.Unlock()
 
 	if !t.dialed {
 		return transport.ErrTransportClosed
@@ -57,25 +57,19 @@ func (t *Transport) Close() error {
 //
 // Calls to bind will also register a binding without a version to allow
 // local clients to target this endpoint if no version is specified.
-//
-// Bindings can only be established on a closed transport. Calls to Bind
-// after a call to Dial will result in an error.
 func (t *Transport) Bind(version, service, endpoint string, handler transport.Handler) error {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwMutex.Lock()
+	defer t.rwMutex.Unlock()
 
-	if t.dialed {
-		return transport.ErrTransportAlreadyDialed
-	}
-
-	if version != "" {
-		version = "-" + version
-	}
-
-	key := fmt.Sprintf("%s%s/%s", service, version, endpoint)
+	key := fmt.Sprintf("%s%s/%s", version, service, endpoint)
 	versionlessKey := fmt.Sprintf("%s/%s", service, endpoint)
 	if t.bindings[key] != nil {
-		return fmt.Errorf("binding %q already defined", key)
+		return fmt.Errorf(
+			"binding (version: %q, service: %q, endpoint: %q) already defined",
+			version,
+			service,
+			endpoint,
+		)
 	}
 	t.bindings[key] = handler
 	t.bindings[versionlessKey] = handler
@@ -83,39 +77,48 @@ func (t *Transport) Bind(version, service, endpoint string, handler transport.Ha
 	return nil
 }
 
+// Unbind removes a message handler previously registered by a call to Bind().
+// Calling Unbind with a (version, service, endpoint) tuple that is not
+// registered has no effect.
+func (t *Transport) Unbind(version, service, endpoint string) {
+	t.rwMutex.Lock()
+	defer t.rwMutex.Unlock()
+
+	key := fmt.Sprintf("%s%s/%s", version, service, endpoint)
+	versionlessKey := fmt.Sprintf("%s/%s", service, endpoint)
+	delete(t.bindings, key)
+	delete(t.bindings, versionlessKey)
+}
+
 // Request performs an RPC and returns back a read-only channel for
 // receiving the result.
 func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMessage {
 	resChan := make(chan transport.ImmutableMessage, 1)
+	go func() {
+		// Build destination key for looking up the binding
+		version := msg.ReceiverVersion()
+		key := fmt.Sprintf("%s%s/%s", version, msg.Receiver(), msg.ReceiverEndpoint())
 
-	// Build destination key for looking up the binding
-	version := msg.ReceiverVersion()
-	if version != "" {
-		version = "-" + version
-	}
-	key := fmt.Sprintf("%s%s/%s", msg.Receiver(), version, msg.ReceiverEndpoint())
+		t.rwMutex.RLock()
+		handler, exists := t.bindings[key]
+		t.rwMutex.RUnlock()
 
-	// This is required to prevent go test -race from flagging this as a false-positive data race.
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-
-	go func(handler transport.Handler, req transport.Message, resChan chan transport.ImmutableMessage) {
 		res := transport.MakeGenericMessage()
 		res.SenderField = msg.Receiver()
 		res.SenderEndpointField = msg.ReceiverEndpoint()
 		res.ReceiverField = msg.Sender()
 		res.ReceiverEndpointField = msg.SenderEndpoint()
 
-		// Unknown target; return back an error
-		if handler == nil {
+		// Unknown binding
+		if !exists {
 			res.SetPayload(nil, transport.ErrNotFound)
 		} else {
-			handler.Process(req, res)
+			handler.Process(msg, res)
 		}
 
 		resChan <- res
 		close(resChan)
-	}(t.bindings[key], msg, resChan)
+	}()
 
 	return resChan
 }

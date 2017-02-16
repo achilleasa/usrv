@@ -49,7 +49,18 @@ func TestInMemoryErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
-	expError := `binding "service/endpoint" already defined`
+	expError := `binding (version: "", service: "service", endpoint: "endpoint") already defined`
+	if err == nil || err.Error() != expError {
+		t.Fatalf("expected to get error %q; got %v", expError, err)
+	}
+
+	// Try binding to an already bound versioned endpoint
+	err = tr.Bind("v1", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Bind("v1", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	expError = `binding (version: "v1", service: "service", endpoint: "endpoint") already defined`
 	if err == nil || err.Error() != expError {
 		t.Fatalf("expected to get error %q; got %v", expError, err)
 	}
@@ -57,12 +68,6 @@ func TestInMemoryErrors(t *testing.T) {
 	err = tr.Dial()
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	// Bind to dialed transport
-	err = tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
-	if err != transport.ErrTransportAlreadyDialed {
-		t.Fatalf("expected err %v; got %v", transport.ErrTransportAlreadyDialed, err)
 	}
 
 	// Close already closed transport
@@ -186,6 +191,17 @@ func TestInMemoryRPC(t *testing.T) {
 
 	if string(payload) != expValues[0] {
 		t.Errorf("expected payload for versioned request to be %q; got %q", expValues[0], string(payload))
+	}
+
+	// Unbind (second call to Unbind should have no effect); next call should fail with ErrNotFound
+	tr.Unbind("v0", "toService", "toEndpoint")
+	tr.Unbind("v0", "toService", "toEndpoint")
+
+	resChan = tr.Request(req)
+	res = <-resChan
+	_, err = res.Payload()
+	if err != transport.ErrNotFound {
+		t.Errorf("expected to get ErrNotFound after unbinding; got %v", err)
 	}
 }
 
