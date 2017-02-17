@@ -1,6 +1,13 @@
 package transport
 
-import "io"
+// Mode describes the way that a transport is being used.
+type Mode bool
+
+// The modes that can be passed to calls to Dial() and Close().
+const (
+	ModeServer Mode = true
+	ModeClient      = false
+)
 
 // A Handler responds to an RPC request.
 //
@@ -26,12 +33,13 @@ func (f HandlerFunc) Process(req ImmutableMessage, res Message) {
 // by usrv. The transport layer is responsible for the exchange of encoded
 // messages between RPC clients and servers.
 type Provider interface {
-	// All transports must implement io.Closer to clean up and shutdown.
-	io.Closer
+	// Dial connects to the transport using the specified dial mode. When
+	// the dial mode is set to DialModeServer the transport will start
+	// relaying messages to registered bindings.
+	Dial(mode Mode) error
 
-	// Dial connects the transport, establishes any declared bindings and
-	// starts relaying messages.
-	Dial() error
+	// Close terminates a dialed connection using the specified dial mode.
+	Close(mode Mode) error
 
 	// Bind listens for messages send to a particular service and
 	// endpoint combination and invokes the supplied handler to process them.

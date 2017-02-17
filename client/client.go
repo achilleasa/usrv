@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/achilleasa/usrv"
 	"github.com/achilleasa/usrv/encoding"
@@ -21,6 +22,9 @@ import (
 type Client struct {
 	// The transport used by the client.
 	transport transport.Provider
+
+	// A flag indicating that the client is closed.
+	closed int32
 
 	// A codec instance for handling marshaling/unmarshaling.
 	codec encoding.Codec
@@ -63,6 +67,12 @@ func New(serviceName string, options ...Option) (*Client, error) {
 
 	c.marshaler, c.unmarshaler = c.codec.Marshaler(), c.codec.Unmarshaler()
 
+	// Dial the transport
+	err = c.transport.Dial(transport.ModeClient)
+	if err != nil {
+		return nil, err
+	}
+
 	return c, nil
 }
 
@@ -77,6 +87,13 @@ func (c *Client) setDefaults() {
 	}
 }
 
+// Close shuts down the client and its transport. After calling Close() any
+// calls to Request() will fail with transpor.ErrTransportClosed.
+func (c *Client) Close() {
+	atomic.StoreInt32(&c.closed, 1)
+	c.transport.Close(transport.ModeClient)
+}
+
 // Request serializes the supplied request message, executes an RPC call to an
 // endpoint and unserializes the response into the supplied response message
 // instance.
@@ -86,6 +103,10 @@ func (c *Client) setDefaults() {
 // error. It is important to note that a request that times out on the client
 // side may still be executed by the remote endpoint.
 func (c *Client) Request(ctx context.Context, endpoint string, reqMessage, resMessage interface{}) error {
+	if atomic.LoadInt32(&c.closed) == 1 {
+		return transport.ErrTransportClosed
+	}
+
 	if ctx == nil {
 		ctx = context.Background()
 	}

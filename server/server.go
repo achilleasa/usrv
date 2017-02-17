@@ -137,7 +137,7 @@ func (s *Server) Listen() error {
 		}
 	}
 
-	err = s.transport.Dial()
+	err = s.transport.Dial(transport.ModeServer)
 	if err != nil {
 		s.mutex.Unlock()
 		return err
@@ -153,7 +153,7 @@ func (s *Server) Listen() error {
 	defer s.mutex.Unlock()
 
 	// Shutdown transport and ack the close request
-	s.transport.Close()
+	s.transport.Close(transport.ModeServer)
 	s.doneChan <- struct{}{}
 
 	return nil
