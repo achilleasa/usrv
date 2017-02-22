@@ -24,7 +24,19 @@ func TestSingletonFactory(t *testing.T) {
 	}
 
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
+
 	srv, err := server.New(
 		"test",
 		server.WithTransport(tr),
@@ -167,7 +179,19 @@ func TestFactory(t *testing.T) {
 	}
 
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
+
 	srv, err := server.New(
 		"test",
 		server.WithTransport(tr),

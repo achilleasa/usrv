@@ -528,7 +528,7 @@ func nopCodec() *testCodec {
 type testTransportThatFailsDialing struct {
 }
 
-func (tr *testTransportThatFailsDialing) Close() error {
+func (tr *testTransportThatFailsDialing) Close(_ transport.Mode) error {
 	return nil
 }
 
@@ -543,6 +543,6 @@ func (tr *testTransportThatFailsDialing) Bind(_, _, _ string, _ transport.Handle
 func (tr *testTransportThatFailsDialing) Unbind(_, _, _ string) {
 }
 
-func (tr *testTransportThatFailsDialing) Dial() error {
+func (tr *testTransportThatFailsDialing) Dial(_ transport.Mode) error {
 	return transport.ErrTransportAlreadyDialed
 }

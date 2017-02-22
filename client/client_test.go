@@ -25,7 +25,18 @@ func TestClientOptionError(t *testing.T) {
 
 func TestClientRequest(t *testing.T) {
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
 
 	expGreeting := "hello tester"
 	expReqPayload := `{"name":"tester"}`
@@ -82,7 +93,18 @@ func TestClientRequest(t *testing.T) {
 
 func TestClientRequestWithServerEndpointCtx(t *testing.T) {
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
 
 	expSender := "foo service"
 	expEndpoint := "foo endpoint"
@@ -162,7 +184,18 @@ func TestClientMiddlewareChain(t *testing.T) {
 	ClearGlobalMiddlewareFactories()
 
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
 
 	expReceiver := "service"
 	expSender := "other service"
@@ -254,7 +287,18 @@ func TestClientMiddlewareChain(t *testing.T) {
 
 func TestClientMiddlewareThatAbortsRequestExecution(t *testing.T) {
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
 
 	logChan := make(chan string, 8)
 
@@ -294,7 +338,18 @@ func TestClientMiddlewareThatAbortsRequestExecution(t *testing.T) {
 
 func TestClientErrors(t *testing.T) {
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
 
 	var invocation int32
 	tr.Bind("", "service", "endpoint", transport.HandlerFunc(
