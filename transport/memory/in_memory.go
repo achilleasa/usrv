@@ -9,15 +9,15 @@ import (
 )
 
 var (
-	_ transport.Provider = &Transport{}
+	singletonInstance transport.Provider = &Transport{}
 )
 
 // Transport implements the in-memory transport. It uses channels and go-routines
 // to facilitate the exchange of messages making it very easy to use when
 // writing tests.
 type Transport struct {
-	rwMutex sync.RWMutex
-	dialed  bool
+	rwMutex  sync.RWMutex
+	refCount int
 
 	bindings map[string]transport.Handler
 }
@@ -30,25 +30,24 @@ func New() *Transport {
 }
 
 // Dial connects the transport and starts relaying messages.
-func (t *Transport) Dial() error {
+func (t *Transport) Dial(_ transport.Mode) error {
 	t.rwMutex.Lock()
 	defer t.rwMutex.Unlock()
 
-	t.dialed = true
+	t.refCount++
 	return nil
 }
 
 // Close shuts down the transport.
-func (t *Transport) Close() error {
+func (t *Transport) Close(mode transport.Mode) error {
 	t.rwMutex.Lock()
 	defer t.rwMutex.Unlock()
 
-	if !t.dialed {
+	if t.refCount == 0 {
 		return transport.ErrTransportClosed
 	}
 
-	t.dialed = false
-
+	t.refCount--
 	return nil
 }
 
@@ -101,6 +100,7 @@ func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMes
 
 		t.rwMutex.RLock()
 		handler, exists := t.bindings[key]
+		closed := t.refCount == 0
 		t.rwMutex.RUnlock()
 
 		res := transport.MakeGenericMessage()
@@ -110,9 +110,12 @@ func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMes
 		res.ReceiverEndpointField = msg.SenderEndpoint()
 
 		// Unknown binding
-		if !exists {
+		switch {
+		case closed:
+			res.SetPayload(nil, transport.ErrTransportClosed)
+		case !exists:
 			res.SetPayload(nil, transport.ErrNotFound)
-		} else {
+		default:
 			handler.Process(msg, res)
 		}
 
@@ -129,4 +132,11 @@ func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMes
 // it to be used as usrv.DefaultTransportFactory.
 func Factory() transport.Provider {
 	return New()
+}
+
+// SingletonFactory is a factory for creating singleton InMemory transport
+// instances. This function returns back a Transport interface allowing it to
+// be used as usrv.DefaultTransportFactory.
+func SingletonFactory() transport.Provider {
+	return singletonInstance
 }

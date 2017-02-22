@@ -25,7 +25,18 @@ func TestClientOptionError(t *testing.T) {
 
 func TestClientRequest(t *testing.T) {
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
 
 	expGreeting := "hello tester"
 	expReqPayload := `{"name":"tester"}`
@@ -82,7 +93,18 @@ func TestClientRequest(t *testing.T) {
 
 func TestClientRequestWithServerEndpointCtx(t *testing.T) {
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
 
 	expSender := "foo service"
 	expEndpoint := "foo endpoint"
@@ -162,7 +184,18 @@ func TestClientMiddlewareChain(t *testing.T) {
 	ClearGlobalMiddlewareFactories()
 
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
 
 	expReceiver := "service"
 	expSender := "other service"
@@ -254,7 +287,18 @@ func TestClientMiddlewareChain(t *testing.T) {
 
 func TestClientMiddlewareThatAbortsRequestExecution(t *testing.T) {
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
 
 	logChan := make(chan string, 8)
 
@@ -270,6 +314,7 @@ func TestClientMiddlewareThatAbortsRequestExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer c.Close()
 
 	reqObj := map[string]string{}
 	resObj := map[string]string{}
@@ -292,9 +337,39 @@ func TestClientMiddlewareThatAbortsRequestExecution(t *testing.T) {
 	}
 }
 
+func TestClientDialAndRequestErrors(t *testing.T) {
+	_, err := New("Foo", WithTransport(&testTransportThatFailsDialing{}))
+	if err != transport.ErrTransportAlreadyDialed {
+		t.Fatal("expected to get a dial error from testTransportThatFailsDialing")
+	}
+
+	c, err := New("Foo", WithTransport(memory.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c.Close()
+
+	err = c.Request(context.Background(), "foo", nil, nil)
+	if err != transport.ErrTransportClosed {
+		t.Fatalf("expected to get ErrTransportClosed; got %v", err)
+	}
+}
+
 func TestClientErrors(t *testing.T) {
 	tr := memory.New()
-	defer tr.Close()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		tr.Close(transport.ModeServer)
+		tr.Close(transport.ModeClient)
+	}()
 
 	var invocation int32
 	tr.Bind("", "service", "endpoint", transport.HandlerFunc(
@@ -325,6 +400,7 @@ func TestClientErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer c.Close()
 	c.transport = tr
 
 	reqObj := map[string]string{"hello": "world"}
@@ -453,4 +529,26 @@ func (m *testMiddleware) Post(ctx context.Context, req, res transport.ImmutableM
 	if ctxVal != m.name {
 		panic(fmt.Errorf(`expected ctx value "ctx-%s" to be %q; got %q`, m.name, m.name, ctxVal))
 	}
+}
+
+type testTransportThatFailsDialing struct {
+}
+
+func (tr *testTransportThatFailsDialing) Close(_ transport.Mode) error {
+	return nil
+}
+
+func (tr *testTransportThatFailsDialing) Request(_ transport.Message) <-chan transport.ImmutableMessage {
+	return nil
+}
+
+func (tr *testTransportThatFailsDialing) Bind(_, _, _ string, _ transport.Handler) error {
+	return nil
+}
+
+func (tr *testTransportThatFailsDialing) Unbind(_, _, _ string) {
+}
+
+func (tr *testTransportThatFailsDialing) Dial(_ transport.Mode) error {
+	return transport.ErrTransportAlreadyDialed
 }

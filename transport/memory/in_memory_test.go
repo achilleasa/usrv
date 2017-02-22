@@ -5,13 +5,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/achilleasa/usrv/transport"
 )
 
 func TestInMemoryBindVersions(t *testing.T) {
 	tr := New()
-	defer tr.Close()
+	defer tr.Close(transport.ModeServer)
 
 	handler := transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {})
 	var err error
@@ -34,14 +35,7 @@ func TestInMemoryBindVersions(t *testing.T) {
 
 func TestInMemoryErrors(t *testing.T) {
 	tr := New()
-	defer tr.Close()
-
-	// Send to unknown endpoint
-	resChan := tr.Request(newMessage("test/case", "unknown/endpoint"))
-	res := <-resChan
-	if _, err := res.Payload(); err != transport.ErrNotFound {
-		t.Fatalf("expected err %v; got %v", transport.ErrNotFound, err)
-	}
+	defer tr.Close(transport.ModeClient)
 
 	// Try to bind to already bound endpoint
 	err := tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
@@ -65,25 +59,70 @@ func TestInMemoryErrors(t *testing.T) {
 		t.Fatalf("expected to get error %q; got %v", expError, err)
 	}
 
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeServer)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	// Send to unknown endpoint
+	resChan := tr.Request(newMessage("test/case", "unknown/endpoint"))
+	res := <-resChan
+	if _, err := res.Payload(); err != transport.ErrNotFound {
+		t.Fatalf("expected err %v; got %v", transport.ErrNotFound, err)
+	}
+
 	// Close already closed transport
-	err = tr.Close()
+	err = tr.Close(transport.ModeClient)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = tr.Close()
+	err = tr.Close(transport.ModeServer)
 	if err != transport.ErrTransportClosed {
 		t.Fatalf("expected err %v; got %v", transport.ErrTransportClosed, err)
 	}
 }
 
+func TestClosedTransportInRequestGoRoutine(t *testing.T) {
+	tr := New()
+	tr.Dial(transport.ModeServer)
+
+	// Lock the mutex so that the request go-routine blocks
+	tr.rwMutex.Lock()
+	resChan := tr.Request(newMessage("test/case", "unknown/endpoint"))
+
+	<-time.After(100 * time.Millisecond)
+	tr.refCount = 0
+	tr.rwMutex.Unlock()
+
+	res := <-resChan
+	if _, err := res.Payload(); err != transport.ErrTransportClosed {
+		t.Fatalf("expected err %v; got %v", transport.ErrTransportClosed, err)
+	}
+}
+
+func TestFactories(t *testing.T) {
+	tr1 := SingletonFactory()
+	tr2 := SingletonFactory()
+	defer tr1.Close(transport.ModeServer)
+	defer tr2.Close(transport.ModeServer)
+
+	if tr1 != tr2 {
+		t.Fatalf("expected singleton factory to return the same instance")
+	}
+
+	tr1 = Factory()
+	tr2 = Factory()
+	defer tr1.Close(transport.ModeServer)
+	defer tr2.Close(transport.ModeServer)
+
+	if tr1 == tr2 {
+		t.Fatalf("expected factory to return different instance")
+	}
+}
+
 func TestInMemoryRPC(t *testing.T) {
 	tr := Factory()
-	defer tr.Close()
+	defer tr.Close(transport.ModeServer)
 
 	expHeaders := map[string]string{
 		"Key1": "value1",
@@ -135,7 +174,7 @@ func TestInMemoryRPC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeServer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +263,7 @@ func BenchmarkInMemory100Workers(b *testing.B) {
 
 func benchInMemory(b *testing.B, workers int) {
 	tr := New()
-	defer tr.Close()
+	defer tr.Close(transport.ModeServer)
 
 	payload := []byte("test payload")
 	msgPerWorker := (b.N / workers) + 1

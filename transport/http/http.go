@@ -54,7 +54,8 @@ var (
 )
 
 var (
-	_ transport.Provider = &Transport{}
+	_                 transport.Provider = &Transport{}
+	singletonInstance *Transport
 )
 
 // Binding encapsulates the details of a service/endpoint combination and
@@ -113,14 +114,6 @@ func (b defaultURLBuilder) URL(version, service, endpoint string) string {
 
 type requestMaker interface {
 	Do(req *nethttp.Request) (*nethttp.Response, error)
-}
-
-type requestMakerThatAlwaysFails struct {
-	err error
-}
-
-func (rm *requestMakerThatAlwaysFails) Do(req *nethttp.Request) (*nethttp.Response, error) {
-	return nil, rm.err
 }
 
 // Transport implements a usrv transport over HTTP/HTTPS.
@@ -190,8 +183,9 @@ func (rm *requestMakerThatAlwaysFails) Do(req *nethttp.Request) (*nethttp.Respon
 // Dial().
 type Transport struct {
 	// Internal locks.
-	rwMutex sync.RWMutex
-	dialed  bool
+	rwMutex        sync.RWMutex
+	serverRefCount int
+	clientRefCount int
 
 	// The declared bindings.
 	bindings map[string]*binding
@@ -215,7 +209,8 @@ type Transport struct {
 	listener net.Listener
 
 	// A client implementation that can perform http requests.
-	client requestMaker
+	client    requestMaker
+	clientErr error
 
 	// URLBuilder can be overriden to implement custom service discovery rules.
 	URLBuilder ServiceURLBuilder
@@ -236,37 +231,73 @@ func New() *Transport {
 		watcherDoneChan: make(chan struct{}, 0),
 	}
 
-	t.createClient()
 	go t.configChangeMonitor()
 	setFinalizer(t, func(t *Transport) { close(t.watcherDoneChan) })
 
 	return t
 }
 
-// Dial connects the transport and starts relaying messages.
-func (t *Transport) Dial() error {
+// Dial connects to the transport using the specified dial mode. When
+// the dial mode is set to DialModeServer the transport will start
+// relaying messages to registered bindings.
+func (t *Transport) Dial(mode transport.Mode) error {
 	t.rwMutex.Lock()
 	defer t.rwMutex.Unlock()
 
-	return t.dial()
+	switch mode {
+	case transport.ModeServer:
+		// Already dialed
+		if t.serverRefCount > 0 {
+			t.serverRefCount++
+			return nil
+		}
+		err := t.dial()
+		if err == nil {
+			t.serverRefCount++
+		}
+		return err
+	default:
+		// Already dialed
+		if t.clientRefCount > 0 {
+			t.clientRefCount++
+			return nil
+		}
+
+		err := t.createClient()
+		if err == nil {
+			t.clientRefCount++
+		}
+		return err
+	}
 }
 
 // Close shuts down the transport.
-func (t *Transport) Close() error {
+func (t *Transport) Close(mode transport.Mode) error {
 	t.rwMutex.Lock()
 	defer t.rwMutex.Unlock()
 
-	if !t.dialed {
-		return transport.ErrTransportClosed
+	switch mode {
+	case transport.ModeServer:
+		if t.serverRefCount == 0 {
+			return transport.ErrTransportClosed
+		}
+
+		t.serverRefCount--
+		if t.serverRefCount == 0 && t.listener != nil {
+			// Close listener and wait for server goroutine to exit
+			t.listener.Close()
+			<-t.serverDoneChan
+			t.serverDoneChan = nil
+
+			t.listener = nil
+		}
+	case transport.ModeClient:
+		if t.clientRefCount == 0 {
+			return transport.ErrTransportClosed
+		}
+
+		t.clientRefCount--
 	}
-
-	// Close listener and wait for server goroutine to exit
-	t.listener.Close()
-	<-t.serverDoneChan
-	t.serverDoneChan = nil
-
-	t.listener = nil
-	t.dialed = false
 
 	return nil
 }
@@ -352,8 +383,18 @@ func (t *Transport) Request(reqMsg transport.Message) <-chan transport.Immutable
 		httpReq.Header.Set(headerPrefix+senderEndpointHeader, reqMsg.SenderEndpoint())
 
 		// Exec request
+		var httpRes *nethttp.Response
 		t.rwMutex.RLock()
-		httpRes, err := t.client.Do(httpReq)
+		switch t.clientRefCount {
+		case 0:
+			err = transport.ErrTransportClosed
+		default:
+			if t.clientErr != nil {
+				err = t.clientErr
+				break
+			}
+			httpRes, err = t.client.Do(httpReq)
+		}
 		t.rwMutex.RUnlock()
 
 		if httpRes != nil {
@@ -433,10 +474,9 @@ func (t *Transport) dial() error {
 	}
 
 	// If we are already listening shutdown the old server
-	if t.dialed {
+	if t.serverRefCount > 0 && t.listener != nil {
 		t.listener.Close()
 		<-t.serverDoneChan
-		t.dialed = false
 	}
 
 	if tlsConfig != nil {
@@ -445,13 +485,7 @@ func (t *Transport) dial() error {
 		t.listener, err = listen("tcp", listenPort)
 	}
 	if err != nil {
-		return err
-	}
-
-	// Update client
-	err = t.createClient()
-	if err != nil {
-		t.listener.Close()
+		t.listener = nil
 		return err
 	}
 
@@ -472,8 +506,6 @@ func (t *Transport) dial() error {
 
 	// Wait for server to start
 	wg.Wait()
-
-	t.dialed = true
 	return nil
 }
 
@@ -487,16 +519,16 @@ func (t *Transport) configChangeMonitor() {
 		case <-t.config.ChangeChan():
 		}
 
-		// If the transport is dialed force a redial; this also updates the client
+		// If the transport is dialed in server mode force a redial
 		t.rwMutex.Lock()
-		if t.dialed {
+		if t.serverRefCount > 0 {
 			t.dial()
-			t.rwMutex.Unlock()
-			continue
 		}
 
-		// Just update the client
-		t.createClient()
+		// If the trnasport is dialed in client mode update the client
+		if t.clientRefCount > 0 {
+			t.clientErr = t.createClient()
+		}
 		t.rwMutex.Unlock()
 	}
 }
@@ -626,31 +658,35 @@ func (t *Transport) createClient() error {
 		case tlsVerifyAddToCertPool:
 			tlsConfig, err = t.buildTLSConfig()
 			if err != nil {
-				t.client = &requestMakerThatAlwaysFails{err: err}
-				return err
+				break
 			}
 
-			certPool, err := systemCertPool()
+			var certPool *x509.CertPool
+			certPool, err = systemCertPool()
 			if err != nil {
-				t.client = &requestMakerThatAlwaysFails{err: err}
-				return err
+				break
 			}
 
-			certData, err := readFile(t.tlsCert.Get())
+			var certData []byte
+			certData, err = readFile(t.tlsCert.Get())
 			if err != nil {
-				t.client = &requestMakerThatAlwaysFails{err: err}
-				return err
+				break
 			}
 			added := certPool.AppendCertsFromPEM(certData)
 			if !added {
 				err = errAddCertificateToPool
-				t.client = &requestMakerThatAlwaysFails{err: err}
-				return err
+				break
 			}
 
 			tlsConfig.RootCAs = certPool
 		default:
-			return errInvalidVerifyMode
+			err = errInvalidVerifyMode
+		}
+
+		if err != nil {
+			t.client = nil
+			t.clientErr = err
+			return err
 		}
 
 		client = &nethttp.Client{
@@ -703,6 +739,16 @@ func (t *Transport) buildTLSConfig() (tlsConfig *tls.Config, err error) {
 // it to be used as usrv.DefaultTransportFactory.
 func Factory() transport.Provider {
 	return New()
+}
+
+// SingletonFactory is a factory for creating singleton HTTP transport
+// instances. This function returns back a Transport interface allowing it to
+// be used as usrv.DefaultTransportFactory.
+func SingletonFactory() transport.Provider {
+	if singletonInstance == nil {
+		singletonInstance = New()
+	}
+	return singletonInstance
 }
 
 func init() {

@@ -20,11 +20,9 @@ import (
 	"github.com/achilleasa/usrv/transport"
 )
 
-func TestHTTPErrors(t *testing.T) {
+func TestHTTPServerErrors(t *testing.T) {
 	tr := New()
 	tr.port.Set(9901)
-	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9901"}
-	defer tr.Close()
 
 	// Try to bind to already bound endpoint
 	err := tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
@@ -38,14 +36,14 @@ func TestHTTPErrors(t *testing.T) {
 	}
 
 	// Test close on closed transport
-	err = tr.Close()
+	err = tr.Close(transport.ModeServer)
 	if err != transport.ErrTransportClosed {
 		t.Fatalf("expected error %v; got %v", transport.ErrTransportClosed, err)
 	}
 
 	// Test invalid protocol
 	tr.protocol.Set("gopher")
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeServer)
 	expError = `unsupported protocol "gopher"`
 	if err == nil || err.Error() != expError {
 		t.Fatalf("expected dial to report listen error %q; got %v", expError, err)
@@ -58,18 +56,21 @@ func TestHTTPErrors(t *testing.T) {
 	listen = func(_, _ string) (net.Listener, error) {
 		return nil, errors.New(expError)
 	}
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeServer)
+	defer tr.Close(transport.ModeServer)
 	listen = origListen
 	if err == nil || err.Error() != expError {
 		t.Fatalf("expected dial to report listen error %q; got %v", expError, err)
 	}
 
 	// Test double dial
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeServer)
+	defer tr.Close(transport.ModeServer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeServer)
+	defer tr.Close(transport.ModeServer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,14 +80,49 @@ func TestHTTPErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestHTTPClientErrors(t *testing.T) {
+	tr := New()
+	tr.port.Set(9902)
+	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9902"}
+
+	err := tr.Close(transport.ModeClient)
+	if err != transport.ErrTransportClosed {
+		t.Fatalf("expected to get ErrTransportClosed; got %v", err)
+	}
+
+	err = tr.Bind("", "service", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Request when transport is closed
+	res := <-tr.Request(newMessage("test/producer", "service/endpoint"))
+	if _, err := res.Payload(); err != transport.ErrTransportClosed {
+		t.Fatalf("expected to get error %q; got %v", transport.ErrTransportClosed, err)
+	}
+	res.Close()
+
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeServer)
+
+	err = tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
 
 	// Test error while creating client request
 	origNewRequest := newRequest
-	expError = "new request errror"
+	expError := "new request errror"
 	newRequest = func(_, _ string, _ io.Reader) (*http.Request, error) {
 		return nil, errors.New(expError)
 	}
-	res := <-tr.Request(newMessage("test/producer", "service/endpoint"))
+	res = <-tr.Request(newMessage("test/producer", "service/endpoint"))
 	newRequest = origNewRequest
 	if _, err := res.Payload(); err == nil || err.Error() != expError {
 		t.Fatalf("expected to get error %q; got %v", expError, err)
@@ -111,6 +147,14 @@ func TestHTTPErrors(t *testing.T) {
 	}
 	if httpRes.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected non-POST request to get 404 status code; got %d", httpRes.StatusCode)
+	}
+
+	// Simulate client eeror
+	expErr := errors.New("client error")
+	tr.clientErr = expErr
+	res = <-tr.Request(newMessage("test/producer", "service/endpoint"))
+	if _, err := res.Payload(); err != expErr {
+		t.Fatalf("expected to get error %q; got %v", expError, err)
 	}
 }
 
@@ -137,7 +181,7 @@ func TestTLSErrors(t *testing.T) {
 	}
 
 	// Calling dial should also fail with same error
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeClient)
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
 	}
@@ -161,10 +205,16 @@ func TestTLSErrors(t *testing.T) {
 		return tls.Certificate{}, expError
 	}
 	err = createAtomicClient(tr)
-	loadX509KeyPair = origLoadX509KeyPair
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
 	}
+
+	// Trying to dial in server mode should also fail
+	err = tr.Dial(transport.ModeServer)
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+	loadX509KeyPair = origLoadX509KeyPair
 
 	// System cert pool errors
 	loadX509KeyPair = func(_, _ string) (tls.Certificate, error) {
@@ -205,31 +255,12 @@ func TestTLSErrors(t *testing.T) {
 	if err != expError {
 		t.Fatalf("expected to get error %v; got %v", expError, err)
 	}
-
-	// Calling dial should also fail with same error
-	err = tr.Dial()
-	if err != expError {
-		t.Fatalf("expected to get error %v; got %v", expError, err)
-	}
-
-	// At this point the http client is a dummy requestMaker that always fails
-	req := newMessage("fromService/fromEndpoint", "localhost/toEndpoint")
-	defer req.Close()
-	resChan := tr.Request(req)
-
-	// Wait for response
-	res := <-resChan
-	_, err = res.Payload()
-	if err != expError {
-		t.Fatalf("expected to get error %v; got %v", expError, err)
-	}
 }
 
 func TestHTTPErrorPropagation(t *testing.T) {
 	tr := New()
-	tr.port.Set(9902)
-	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9902"}
-	defer tr.Close()
+	tr.port.Set(9903)
+	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9903"}
 
 	expErrors := []error{
 		transport.ErrNotFound,
@@ -248,10 +279,17 @@ func TestHTTPErrorPropagation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeServer)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tr.Close(transport.ModeServer)
+
+	err = tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
 
 	specIndex := 0
 	for ; len(expErrors) > 0; specIndex++ {
@@ -290,18 +328,38 @@ func TestHTTPErrorPropagation(t *testing.T) {
 
 func TestConcurrentRPCOverHTTP(t *testing.T) {
 	tr := New()
-	tr.port.Set(9906)
-	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9906"}
-	defer tr.Close()
+	tr.port.Set(9904)
+	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9904"}
 
 	handleRPC := func(req transport.ImmutableMessage, res transport.Message) {
 		res.SetPayload([]byte("hello back!"), nil)
 	}
 
-	err := tr.Dial()
+	// Test double server dial
+	err := tr.Dial(transport.ModeServer)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tr.Close(transport.ModeServer)
+
+	err = tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeServer)
+
+	// Test double client dial
+	err = tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	err = tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
 
 	// Bind after dialing
 	err = tr.Bind("", "toService", "toEndpoint", transport.HandlerFunc(handleRPC))
@@ -339,9 +397,8 @@ func TestConcurrentRPCOverHTTP(t *testing.T) {
 
 func TestRPCOverHTTP(t *testing.T) {
 	tr := New()
-	tr.port.Set(9903)
-	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9903"}
-	defer tr.Close()
+	tr.port.Set(9905)
+	tr.URLBuilder = testURLBuilder{addr: "http://localhost:9905"}
 
 	expHeaders := map[string]string{
 		"Key1": "value1",
@@ -403,10 +460,17 @@ func TestRPCOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeServer)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tr.Close(transport.ModeServer)
+
+	err = tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
 
 	// Bind after dialing
 	err = tr.Bind("", "toService", "toEndpoint", transport.HandlerFunc(handleRPC))
@@ -490,7 +554,6 @@ func TestRPCOverHTTPS(t *testing.T) {
 	tr.tlsCert.Set(certFile)
 	tr.tlsKey.Set(keyFile)
 	tr.URLBuilder = testURLBuilder{addr: "https://localhost:9443"}
-	defer tr.Close()
 
 	expValue := "hello!"
 	handleRPC := func(req transport.ImmutableMessage, res transport.Message) {
@@ -502,10 +565,17 @@ func TestRPCOverHTTPS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeServer)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tr.Close(transport.ModeServer)
+
+	err = tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
 
 	req := newMessage("fromService/fromEndpoint", "localhost/toEndpoint")
 	defer req.Close()
@@ -552,7 +622,7 @@ func TestHTTPReconfiguration(t *testing.T) {
 	// Set our custom values
 	config.Store.SetKeys(0, "transport/http", map[string]string{
 		"protocol":          "http",
-		"port":              "9904",
+		"port":              "9906",
 		"client/hostsuffix": "",
 		"tls/certificate":   certFile,
 		"tls/key":           keyFile,
@@ -560,14 +630,13 @@ func TestHTTPReconfiguration(t *testing.T) {
 
 	tr := New()
 	tr.URLBuilder = newDefaultURLBuilder()
-	defer tr.Close()
 
 	expValue := "hello!"
 	handleRPC := func(req transport.ImmutableMessage, res transport.Message) {
 		res.SetPayload([]byte(expValue), nil)
 
 		// Ensure that listener uses the new port
-		expListenValue := "[::]:9905"
+		expListenValue := "[::]:9907"
 		listenAddr := tr.listener.Addr().String()
 		if listenAddr != expListenValue {
 			t.Errorf("expected listener to use address %q; got %q", expListenValue, listenAddr)
@@ -579,20 +648,27 @@ func TestHTTPReconfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = tr.Dial()
+	err = tr.Dial(transport.ModeServer)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tr.Close(transport.ModeServer)
+
+	err = tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
 
 	// Ensure that listener uses the old port
-	expListenValue := "[::]:9904"
+	expListenValue := "[::]:9906"
 	listenAddr := tr.listener.Addr().String()
 	if listenAddr != expListenValue {
 		t.Errorf("expected listener to use address %q; got %q", expListenValue, listenAddr)
 	}
 
 	// Update port configuration and wait for transport to redial itself
-	config.Store.SetKey(0, "transport/http/port", "9905")
+	config.Store.SetKey(0, "transport/http/port", "9907")
 	<-time.After(100 * time.Millisecond)
 
 	req := newMessage("fromService/fromEndpoint", "localhost/toEndpoint")
@@ -643,11 +719,13 @@ func TestHTTPClientReconfiguration(t *testing.T) {
 		"tls/key":           keyFile,
 	})
 
-	trServer := Factory()
-	trClient := New()
+	trClient := Factory().(*Transport)
 	trClient.URLBuilder = newDefaultURLBuilder()
-	defer trServer.Close()
-	defer trClient.Close()
+	err := trClient.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer trClient.Close(transport.ModeClient)
 
 	// Now switch to https mode
 	config.Store.SetKey(0, "transport/http/protocol", "https")
@@ -658,15 +736,18 @@ func TestHTTPClientReconfiguration(t *testing.T) {
 		res.SetPayload([]byte(expValue), nil)
 	}
 
-	err := trServer.Bind("", "localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
+	trServer := Factory()
+
+	err = trServer.Bind("", "localhost", "toEndpoint", transport.HandlerFunc(handleRPC))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = trServer.Dial()
+	err = trServer.Dial(transport.ModeServer)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer trServer.Close(transport.ModeServer)
 
 	req := newMessage("fromService/fromEndpoint", "localhost/toEndpoint")
 	defer req.Close()
@@ -734,6 +815,26 @@ func TestDefaultURLBuilder(t *testing.T) {
 	url = builder.URL("", "foo", "bar")
 	if expURL != url {
 		t.Fatalf("expectd builder to return URL %q; got %q", expURL, url)
+	}
+}
+
+func TestFactories(t *testing.T) {
+	tr1 := SingletonFactory()
+	tr2 := SingletonFactory()
+	defer tr1.Close(transport.ModeServer)
+	defer tr2.Close(transport.ModeServer)
+
+	if tr1 != tr2 {
+		t.Fatalf("expected singleton factory to return the same instance")
+	}
+
+	tr1 = Factory()
+	tr2 = Factory()
+	defer tr1.Close(transport.ModeServer)
+	defer tr2.Close(transport.ModeServer)
+
+	if tr1 == tr2 {
+		t.Fatalf("expected factory to return different instance")
 	}
 }
 
