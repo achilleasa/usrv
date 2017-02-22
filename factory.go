@@ -25,6 +25,6 @@ var (
 )
 
 func init() {
-	DefaultTransportFactory = http.Factory
+	DefaultTransportFactory = http.SingletonFactory
 	DefaultCodecFactory = json.Codec
 }
