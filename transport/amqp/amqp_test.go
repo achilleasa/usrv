@@ -1,0 +1,897 @@
+package amqp
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"reflect"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/achilleasa/usrv/transport"
+	amqpClient "github.com/streadway/amqp"
+)
+
+func TestDialServerErrors(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
+	expError := errors.New("amqp dial error")
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return nil, nil, expError
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeServer)
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	mc := &mockChannel{}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	mc.exDeclareErr = errors.New("amqp exchange declare error")
+	err = tr.Dial(transport.ModeServer)
+	if err != mc.exDeclareErr {
+		t.Fatalf("expected to get error %v; got %v", mc.exDeclareErr, err)
+	}
+	mc.exDeclareErr = nil
+
+	mc.queueDeclareErr = errors.New("amqp queue declare error")
+	err = tr.Dial(transport.ModeServer)
+	if err != mc.queueDeclareErr {
+		t.Fatalf("expected to get error %v; got %v", mc.queueDeclareErr, err)
+	}
+	mc.queueDeclareErr = nil
+
+	mc.consumeErr = errors.New("amqp queue consume error")
+	err = tr.Dial(transport.ModeServer)
+	if err != mc.consumeErr {
+		t.Fatalf("expected to get error %v; got %v", mc.consumeErr, err)
+	}
+	mc.consumeErr = nil
+
+	err = tr.Bind("", "foo", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mc.queueBindErr = errors.New("amqp queue bind error")
+	err = tr.Dial(transport.ModeServer)
+	if err != mc.queueBindErr {
+		t.Fatalf("expected to get error %v; got %v", mc.queueBindErr, err)
+	}
+	mc.queueBindErr = nil
+
+	err = tr.Close(transport.ModeServer)
+	if err != transport.ErrTransportClosed {
+		t.Fatalf("expected to get ErrTransportClosed; got %v", err)
+	}
+}
+
+func TestDialClientErrors(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
+	expError := errors.New("amqp dial error")
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return nil, nil, expError
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeClient)
+	if err != expError {
+		t.Fatalf("expected to get error %v; got %v", expError, err)
+	}
+
+	mc := &mockChannel{}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	mc.exDeclareErr = errors.New("amqp exchange declare error")
+	err = tr.Dial(transport.ModeClient)
+	if err != mc.exDeclareErr {
+		t.Fatalf("expected to get error %v; got %v", mc.exDeclareErr, err)
+	}
+	mc.exDeclareErr = nil
+
+	mc.queueDeclareErr = errors.New("amqp queue declare error")
+	err = tr.Dial(transport.ModeClient)
+	if err != mc.queueDeclareErr {
+		t.Fatalf("expected to get error %v; got %v", mc.queueDeclareErr, err)
+	}
+	mc.queueDeclareErr = nil
+
+	mc.consumeErr = errors.New("amqp queue consume error")
+	err = tr.Dial(transport.ModeClient)
+	if err != mc.consumeErr {
+		t.Fatalf("expected to get error %v; got %v", mc.consumeErr, err)
+	}
+	mc.consumeErr = nil
+
+	err = tr.Close(transport.ModeClient)
+	if err != transport.ErrTransportClosed {
+		t.Fatalf("expected to get ErrTransportClosed; got %v", err)
+	}
+}
+
+func TestServerDisconnectHandling(t *testing.T) {
+	mc := &mockChannel{
+		consumeChan: make(chan amqpClient.Delivery, 0),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Trigger second Close() after we exit; this should be a no-op
+	defer tr.Close(transport.ModeServer)
+
+	// Simulate disconnect by closing the delivery channel; server worker
+	// should pick it up and exit
+	close(mc.consumeChan)
+	<-time.After(100 * time.Millisecond)
+
+	// Trigger a close
+	tr.Close(transport.ModeServer)
+}
+
+func TestBindAndUnbind(t *testing.T) {
+	mc := &mockChannel{}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeServer)
+
+	err = tr.Bind("", "foo", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expError := `binding (version: "", service: "foo", endpoint: "endpoint") already defined`
+	err = tr.Bind("", "foo", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	if err == nil || err.Error() != expError {
+		t.Fatal("expected to get error %q; got %v", expError, err)
+	}
+
+	tr.Unbind("", "foo", "endpoint")
+
+	// We should be able to bind again now; this time simulate an amqp error when we try to bind
+	mc.queueBindErr = errors.New("amqp queue bind error")
+	err = tr.Bind("", "foo", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
+	if err != mc.queueBindErr {
+		t.Fatalf("expected to get error %v; got %v", mc.queueBindErr, err)
+	}
+}
+
+func TestRequestForInvalidBinding(t *testing.T) {
+	mc := &mockChannel{
+		consumeChan: make(chan amqpClient.Delivery, 0),
+		pubQueue:    make(chan amqpClient.Publishing, 1),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeServer)
+
+	// Test a message that get's delivered to a non-existing binding
+	req := transport.MakeGenericMessage()
+	req.SenderField = "test"
+	req.SenderEndpointField = "test-endpoint"
+	req.ReceiverField = "unknown"
+	req.ReceiverEndpointField = "endpoint"
+	mc.consumeChan <- makeAmqpDelivery(req, mc)
+
+	var pub amqpClient.Publishing
+	select {
+	case pub = <-mc.pubQueue:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout while waiting for server worker to publish response")
+	}
+
+	if pub.ContentType != contentTypeError {
+		t.Fatalf("expected content type to be %q; got %q", contentTypeError, pub.ContentType)
+	}
+
+	bodyAsStr := string(pub.Body)
+	if bodyAsStr != transport.ErrNotFound.Error() {
+		t.Fatalf("expected response body to be %v; got %s", transport.ErrNotFound, bodyAsStr)
+	}
+
+	if pub.AppId != "" || pub.UserId != "" {
+		t.Fatalf("expected response appID and userID to be empty; got %q, %q", pub.AppId, pub.UserId)
+	}
+}
+
+func TestRequestForValidBinding(t *testing.T) {
+	mc := &mockChannel{
+		consumeChan: make(chan amqpClient.Delivery, 0),
+		pubQueue:    make(chan amqpClient.Publishing, 1),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeServer)
+
+	req := transport.MakeGenericMessage()
+	req.SenderField = "test"
+	req.SenderEndpointField = "test-endpoint"
+	req.ReceiverField = "service"
+	req.ReceiverEndpointField = "remote-endpoint"
+	req.HeadersField = map[string]string{
+		"Foo": "foo_val",
+		"Bar": "bar_val",
+	}
+
+	// Define binding
+	invokedChan := make(chan struct{}, 0)
+	expPayload := []byte("response data")
+	err = tr.Bind("", "service", "remote-endpoint", transport.HandlerFunc(func(reqMsg transport.ImmutableMessage, res transport.Message) {
+		if reqMsg.ID() != req.ID() {
+			t.Errorf("expected req ID to be %s; got %s", req.ID(), reqMsg.ID())
+		}
+
+		if !reflect.DeepEqual(reqMsg.Headers(), req.Headers()) {
+			t.Errorf("expected req headers to be %v; got %v", req.Headers(), reqMsg.Headers())
+		}
+
+		if reqMsg.SenderEndpoint() != req.SenderEndpoint() {
+			t.Errorf("expected req sender endpoint to be %s; got %s", req.SenderEndpoint(), reqMsg.SenderEndpoint())
+		}
+
+		if reqMsg.Receiver() != req.Receiver() {
+			t.Errorf("expected req receiver to be %s; got %s", req.Receiver(), reqMsg.Receiver())
+		}
+
+		if reqMsg.ReceiverEndpoint() != req.ReceiverEndpoint() {
+			t.Errorf("expected req receiver endpoint to be %s; got %s", req.ReceiverEndpoint(), reqMsg.ReceiverEndpoint())
+		}
+
+		if reqMsg.ReceiverVersion() != req.ReceiverVersion() {
+			t.Errorf("expected req receiver version to be %s; got %s", req.ReceiverVersion(), reqMsg.ReceiverVersion())
+		}
+
+		res.SetPayload(expPayload, nil)
+		res.SetHeaders(req.Headers())
+		close(invokedChan)
+	}))
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate incoming delivery
+	mc.consumeChan <- makeAmqpDelivery(req, mc)
+	select {
+	case <-invokedChan:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timeout waiting for binding handler to be invoked")
+	}
+
+	var pub amqpClient.Publishing
+	select {
+	case pub = <-mc.pubQueue:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout while waiting for server worker to publish response")
+	}
+
+	if pub.ContentType != contentTypeUsrvData {
+		t.Errorf("expected content type to be %q; got %q", contentTypeUsrvData, pub.ContentType)
+	}
+
+	if !bytes.Equal(pub.Body, expPayload) {
+		t.Errorf("expected response body to be %s; got %s", string(expPayload), string(pub.Body))
+	}
+
+	if pub.AppId != req.Receiver() || pub.UserId != req.ReceiverEndpoint() {
+		t.Errorf("expected response appID and userID to be %q, %q; got %q, %q", req.Receiver(), req.ReceiverEndpoint(), pub.AppId, pub.UserId)
+	}
+
+	expAckCount := 1
+	if mc.AckCount() != expAckCount {
+		t.Errorf("expected ack count to be %d; got %d", expAckCount, mc.AckCount())
+	}
+}
+
+func TestRequestForValidBindingWhenPublishFails(t *testing.T) {
+	mc := &mockChannel{
+		consumeChan: make(chan amqpClient.Delivery, 0),
+		pubQueue:    make(chan amqpClient.Publishing, 1),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeServer)
+
+	req := transport.MakeGenericMessage()
+	req.SenderField = "test"
+	req.SenderEndpointField = "test-endpoint"
+	req.ReceiverField = "service"
+	req.ReceiverEndpointField = "remote-endpoint"
+
+	// Define binding
+	invokedChan := make(chan struct{}, 0)
+	err = tr.Bind("", "service", "remote-endpoint", transport.HandlerFunc(func(reqMsg transport.ImmutableMessage, res transport.Message) {
+		close(invokedChan)
+	}))
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate incoming delivery and setup mc.Publish to fail
+	mc.pubErr = errors.New("amqp publish error")
+	mc.consumeChan <- makeAmqpDelivery(req, mc)
+	select {
+	case <-invokedChan:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timeout waiting for binding handler to be invoked")
+	}
+
+	select {
+	case <-mc.pubQueue:
+		t.Fatalf("received unexpected published message")
+	case <-time.After(1 * time.Second):
+	}
+
+	expNackCount := 1
+	if mc.NackCount() != expNackCount {
+		t.Errorf("expected nack count to be %d; got %d", expNackCount, mc.NackCount())
+	}
+}
+
+func TestClientRequestWithClosedTransport(t *testing.T) {
+	tr := New()
+	res := <-tr.Request(transport.MakeGenericMessage())
+
+	_, err := res.Payload()
+	if err != transport.ErrTransportClosed {
+		t.Fatalf("expected to get transport.ErrTransportClosed; got %v", err)
+	}
+}
+
+func TestClientWorkerPublishRequest(t *testing.T) {
+	mc := &mockChannel{
+		pubQueue: make(chan amqpClient.Publishing, 1),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	req := transport.MakeGenericMessage()
+	req.SenderField = "test"
+	req.SenderEndpointField = "test-endpoint"
+	req.ReceiverField = "service"
+	req.ReceiverEndpointField = "remote-endpoint"
+	req.HeadersField = map[string]string{
+		"Foo": "foo_val",
+		"Bar": "bar_val",
+	}
+	req.SetPayload([]byte("request data"), nil)
+
+	tr.Request(req)
+
+	var pub amqpClient.Publishing
+	select {
+	case pub = <-mc.pubQueue:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout while waiting for client worker to publish request")
+	}
+
+	for k, v := range req.Headers() {
+		if pub.Headers[k] != v {
+			t.Errorf("expected published header %q to have value %q; got %v", k, v, pub.Headers[k])
+		}
+	}
+
+	if pub.ContentType != contentTypeUsrvData {
+		t.Errorf("expected content type to be %q; got %q", contentTypeUsrvData, pub.ContentType)
+	}
+
+	if !bytes.Equal(pub.Body, req.PayloadField) {
+		t.Errorf("expected response body to be %s; got %s", string(req.PayloadField), string(pub.Body))
+	}
+
+	if pub.AppId != req.Sender() || pub.UserId != req.SenderEndpoint() {
+		t.Errorf("expected response appID and userID to be %q, %q; got %q, %q", req.Sender(), req.SenderEndpoint(), pub.AppId, pub.UserId)
+	}
+}
+
+func TestClientWorkerWhenPublishFails(t *testing.T) {
+	mc := &mockChannel{
+		pubQueue: make(chan amqpClient.Publishing, 1),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	req := transport.MakeGenericMessage()
+	req.SenderField = "test"
+	req.SenderEndpointField = "test-endpoint"
+	req.ReceiverField = "service"
+	req.ReceiverEndpointField = "remote-endpoint"
+
+	mc.pubErr = errors.New("amqp publish error")
+	resChan := tr.Request(req)
+
+	select {
+	case <-mc.pubQueue:
+		t.Fatalf("received unexpected published message")
+	case <-time.After(1 * time.Second):
+	}
+
+	res := <-resChan
+	_, err = res.Payload()
+	if err != mc.pubErr {
+		t.Errorf("expected client to relay amqp publish error %v; got %v", mc.pubErr, err)
+	}
+}
+
+func TestClientWorkerWhenReceivingResponses(t *testing.T) {
+	mc := &mockChannel{
+		consumeChan: make(chan amqpClient.Delivery, 0),
+		pubQueue:    make(chan amqpClient.Publishing, 1),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	req := transport.MakeGenericMessage()
+	req.SenderField = "test"
+	req.SenderEndpointField = "test-endpoint"
+	req.ReceiverField = "service"
+	req.ReceiverEndpointField = "remote-endpoint"
+
+	resChan := tr.Request(req)
+
+	select {
+	case <-mc.pubQueue:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout while waiting for client worker to publish request")
+	}
+
+	// Simulate incoming response
+	simRes := transport.MakeGenericMessage()
+	simRes.SenderField = "service"
+	simRes.SenderEndpointField = "remote-endpoint"
+	simRes.ReceiverField = "test"
+	simRes.ReceiverEndpointField = "test-endpoint"
+	simRes.SetHeaders(map[string]string{
+		"Foo": "foo_val",
+		"Bar": "bar_val",
+	})
+	simRes.SetPayload([]byte("response data"), nil)
+	simRes.IDField = req.ID()
+	mc.consumeChan <- makeAmqpDelivery(simRes, mc)
+
+	resMsg := <-resChan
+
+	if resMsg.ID() == simRes.ID() {
+		t.Error("expected response message to use a new ID value")
+	}
+
+	if !reflect.DeepEqual(resMsg.Headers(), simRes.Headers()) {
+		t.Errorf("expected res headers to be %v; got %v", simRes.Headers(), resMsg.Headers())
+	}
+
+	if resMsg.SenderEndpoint() != simRes.SenderEndpoint() {
+		t.Errorf("expected res sender endpoint to be %s; got %s", simRes.SenderEndpoint(), resMsg.SenderEndpoint())
+	}
+
+	if resMsg.Receiver() != simRes.Receiver() {
+		t.Errorf("expected res receiver to be %s; got %s", simRes.Receiver(), resMsg.Receiver())
+	}
+
+	if resMsg.ReceiverEndpoint() != simRes.ReceiverEndpoint() {
+		t.Errorf("expected res receiver endpoint to be %s; got %s", simRes.ReceiverEndpoint(), resMsg.ReceiverEndpoint())
+	}
+
+	if resMsg.ReceiverVersion() != simRes.ReceiverVersion() {
+		t.Errorf("expected res receiver version to be %s; got %s", simRes.ReceiverVersion(), resMsg.ReceiverVersion())
+	}
+
+	payload, err := resMsg.Payload()
+	if err != nil {
+		t.Error(err)
+	}
+
+	if !bytes.Equal(payload, simRes.PayloadField) {
+		t.Errorf("expected response body to be %s; got %s", string(simRes.PayloadField), string(payload))
+	}
+}
+
+func TestClientWorkerWhenReceivingResponsesWithBogusID(t *testing.T) {
+	mc := &mockChannel{
+		consumeChan: make(chan amqpClient.Delivery, 0),
+		pubQueue:    make(chan amqpClient.Publishing, 1),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	req := transport.MakeGenericMessage()
+	req.SenderField = "test"
+	req.SenderEndpointField = "test-endpoint"
+	req.ReceiverField = "service"
+	req.ReceiverEndpointField = "remote-endpoint"
+
+	resChan := tr.Request(req)
+
+	select {
+	case <-mc.pubQueue:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout while waiting for client worker to publish request")
+	}
+
+	// Simulate incoming response with bogus ID
+	simRes := transport.MakeGenericMessage()
+	simRes.SenderField = "service"
+	simRes.SenderEndpointField = "remote-endpoint"
+	simRes.ReceiverField = "test"
+	simRes.ReceiverEndpointField = "test-endpoint"
+	simRes.IDField = "unknown-ID"
+	mc.consumeChan <- makeAmqpDelivery(simRes, mc)
+
+	select {
+	case <-resChan:
+		t.Fatal("received unexpected response message")
+	case <-time.After(1 * time.Second):
+	}
+}
+
+func TestClientWorkerReturnHandling(t *testing.T) {
+	mc := &mockChannel{
+		pubQueue: make(chan amqpClient.Publishing, 1),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	specs := []struct {
+		ReplyCode uint16
+		ExpError  error
+	}{
+		{replyCodeNotFound, transport.ErrNotFound},
+		{replyCodeNotAuthorized, transport.ErrNotAuthorized},
+		{replyCodeNoConsumers, transport.ErrServiceUnavailable},
+		{500, transport.ErrServiceUnavailable},
+	}
+
+	for specIndex, spec := range specs {
+		req := transport.MakeGenericMessage()
+		req.SenderField = "test"
+		req.SenderEndpointField = "test-endpoint"
+		req.ReceiverField = "service"
+		req.ReceiverEndpointField = "remote-endpoint"
+		resChan := tr.Request(req)
+
+		select {
+		case <-mc.pubQueue:
+		case <-time.After(1 * time.Second):
+			t.Errorf("[spec %d] timeout while waiting for client worker to publish request", specIndex)
+			continue
+		}
+
+		// Simulate incoming return
+		mc.returnChan <- amqpClient.Return{
+			CorrelationId: req.ID(),
+			ReplyCode:     spec.ReplyCode,
+		}
+
+		var resMsg transport.ImmutableMessage
+		select {
+		case resMsg = <-resChan:
+		case <-time.After(1 * time.Second):
+			t.Errorf("[spec %d] timeout waiting for response", specIndex)
+			continue
+		}
+
+		_, err := resMsg.Payload()
+		if err != spec.ExpError {
+			t.Errorf("[spec %d] expected to get error %v; got %v", spec.ExpError, err)
+		}
+	}
+}
+
+func TestClientWorkerReturnHandlingWithBogusID(t *testing.T) {
+	mc := &mockChannel{
+		pubQueue: make(chan amqpClient.Publishing, 1),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	tr := New()
+	err := tr.Dial(transport.ModeClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	req := transport.MakeGenericMessage()
+	req.SenderField = "test"
+	req.SenderEndpointField = "test-endpoint"
+	req.ReceiverField = "service"
+	req.ReceiverEndpointField = "remote-endpoint"
+	resChan := tr.Request(req)
+
+	select {
+	case <-mc.pubQueue:
+	case <-time.After(1 * time.Second):
+		t.Errorf("timeout while waiting for client worker to publish request")
+	}
+
+	// Simulate incoming return with bogus ID
+	mc.returnChan <- amqpClient.Return{
+		CorrelationId: "unknown-ID",
+		ReplyCode:     replyCodeNotFound,
+	}
+
+	select {
+	case <-resChan:
+		t.Fatal("received unexpected response message")
+	case <-time.After(1 * time.Second):
+	}
+}
+
+func TestAmqpResponseDecoder(t *testing.T) {
+	expHeaders := amqpClient.Table{
+		"Foo": "foo_val",
+		"Bar": "bar_val",
+	}
+
+	specs := []struct {
+		ContentType       string
+		Body              string
+		ExpPayload        []byte
+		ExpError          error
+		MatchErrAsPointer bool
+	}{
+		{contentTypeError, transport.ErrServiceUnavailable.Error(), nil, transport.ErrServiceUnavailable, true},
+		{contentTypeError, transport.ErrNotAuthorized.Error(), nil, transport.ErrNotAuthorized, true},
+		{contentTypeError, transport.ErrTimeout.Error(), nil, transport.ErrTimeout, true},
+		{contentTypeError, "recovered from panic", nil, errors.New("recovered from panic"), false},
+		{contentTypeError, "", nil, errors.New("unknown error"), false},
+		{contentTypeUsrvData, "response data", []byte("response data"), nil, false},
+	}
+
+	res := transport.MakeGenericMessage()
+	for specIndex, spec := range specs {
+		decodeAmqpResponse(
+			&amqpClient.Delivery{
+				Headers:     expHeaders,
+				ContentType: spec.ContentType,
+				Body:        []byte(spec.Body),
+			},
+			res,
+		)
+
+		for k, v := range expHeaders {
+			if res.HeadersField[k] != v {
+				t.Errorf("[spec %d] expected res header field %q to contain value %q; got %v", specIndex, k, v, res.HeadersField[k])
+			}
+		}
+
+		payload, err := res.Payload()
+		if spec.ExpError != nil {
+			switch {
+			case spec.MatchErrAsPointer && err != spec.ExpError:
+				t.Errorf("[spec %d] expected to get pre-defined error instance %v", specIndex, spec.ExpError)
+			case err == nil || spec.ExpError.Error() != err.Error():
+				t.Errorf("[spec %d] expected to get error %v; got %v", specIndex, spec.ExpError, err)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("[spec %d] got unexpected error %v", specIndex, err)
+			}
+
+			if !bytes.Equal(payload, spec.ExpPayload) {
+				t.Errorf("[spec %d] expected to get payload %v; got %v", spec.ExpPayload, payload)
+			}
+		}
+	}
+}
+
+func makeAmqpDelivery(msg transport.ImmutableMessage, mc amqpChannel) amqpClient.Delivery {
+	d := amqpClient.Delivery{
+		RoutingKey:    routingKey(msg.ReceiverVersion(), msg.Receiver(), msg.ReceiverEndpoint()),
+		CorrelationId: msg.ID(),
+		AppId:         msg.Sender(),
+		UserId:        msg.SenderEndpoint(),
+		Headers:       amqpClient.Table{},
+		Acknowledger:  mc,
+	}
+
+	payload, err := msg.Payload()
+	if err != nil {
+		d.ContentType = contentTypeError
+		d.Body = []byte(err.Error())
+	} else {
+		d.ContentType = contentTypeUsrvData
+		d.Body = payload
+	}
+
+	for k, v := range msg.Headers() {
+		d.Headers[k] = v
+	}
+
+	return d
+}
+
+func TestFactory(t *testing.T) {
+	tr1 := SingletonFactory()
+	tr2 := SingletonFactory()
+
+	if tr1 != tr2 {
+		t.Fatalf("expected singleton factory to return the same instance")
+	}
+}
+
+type mockChannel struct {
+	ackErr          error
+	nackErr         error
+	rejectErr       error
+	pubErr          error
+	exDeclareErr    error
+	queueDeclareErr error
+	queueBindErr    error
+	consumeErr      error
+	closeErr        error
+	consumeChan     chan amqpClient.Delivery
+	returnChan      chan amqpClient.Return
+	pubQueue        chan amqpClient.Publishing
+
+	ackCount    int32
+	nackCount   int32
+	rejectCount int32
+}
+
+func (mc *mockChannel) Reject(tag uint64, requeue bool) error {
+	if mc.rejectErr != nil {
+		return mc.rejectErr
+	}
+
+	atomic.AddInt32(&mc.rejectCount, 1)
+	return nil
+}
+
+func (mc *mockChannel) Rejectkount() int {
+	return int(atomic.LoadInt32(&mc.rejectCount))
+}
+
+func (mc *mockChannel) Ack(tag uint64, multiple bool) error {
+	if mc.ackErr != nil {
+		return mc.ackErr
+	}
+
+	atomic.AddInt32(&mc.ackCount, 1)
+	return nil
+}
+
+func (mc *mockChannel) AckCount() int {
+	return int(atomic.LoadInt32(&mc.ackCount))
+}
+
+func (mc *mockChannel) Nack(tag uint64, multiple bool, requeue bool) error {
+	if mc.nackErr != nil {
+		return mc.nackErr
+	}
+
+	atomic.AddInt32(&mc.nackCount, 1)
+	return nil
+}
+
+func (mc *mockChannel) NackCount() int {
+	return int(atomic.LoadInt32(&mc.nackCount))
+}
+
+func (mc *mockChannel) NotifyReturn(c chan amqpClient.Return) chan amqpClient.Return {
+	mc.returnChan = c
+	return c
+}
+
+func (mc *mockChannel) Publish(exchange, key string, mandatory, immediate bool, msg amqpClient.Publishing) error {
+	if mc.pubErr != nil {
+		return mc.pubErr
+	}
+
+	if mc.pubQueue != nil {
+		mc.pubQueue <- msg
+	}
+
+	return nil
+}
+
+func (mc *mockChannel) ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqpClient.Table) error {
+	return mc.exDeclareErr
+}
+
+func (mc *mockChannel) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqpClient.Table) (amqpClient.Queue, error) {
+	return amqpClient.Queue{
+		Name: "test-queue",
+	}, mc.queueDeclareErr
+}
+
+func (mc *mockChannel) QueueBind(name, key, exchange string, noWait bool, args amqpClient.Table) error {
+	return mc.queueBindErr
+}
+
+func (mc *mockChannel) Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqpClient.Table) (<-chan amqpClient.Delivery, error) {
+	return mc.consumeChan, mc.consumeErr
+}
+
+func (mc *mockChannel) Close() error {
+	return mc.closeErr
+}
