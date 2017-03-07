@@ -33,6 +33,7 @@ var (
 type amqpChannel interface {
 	Ack(tag uint64, multiple bool) error
 	Nack(tag uint64, multiple bool, requeue bool) error
+	Reject(tag uint64, requeue bool) error
 	NotifyReturn(c chan amqpClient.Return) chan amqpClient.Return
 	Publish(exchange, key string, mandatory, immediate bool, msg amqpClient.Publishing) error
 	ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqpClient.Table) error
@@ -100,7 +101,7 @@ type binding struct {
 	handler transport.Handler
 
 	// The service and endpoint combination for this binding. We store this
-	// separately for quickly populating incoming message fields./Request
+	// separately for quickly populating incoming message fields.
 	version  string
 	service  string
 	endpoint string
@@ -145,8 +146,9 @@ type Transport struct {
 	// This channel receives messages sent to amqpRequestQueueName (server mode).
 	incomingReqChan <-chan amqpClient.Delivery
 
-	clientReadyChan chan struct{}
-	serverReadyChan chan struct{}
+	clientExitChan        chan struct{}
+	serverExitChan        chan struct{}
+	serverPendingRequests sync.WaitGroup
 
 	bindings map[string]*binding
 }
@@ -249,9 +251,10 @@ func (t *Transport) dialClient() error {
 
 	// Start the client worker and wait for it to ack that its up & running
 	t.outgoingReqChan = make(chan *rpc, 0)
-	t.clientReadyChan = make(chan struct{}, 0)
-	go t.clientWorker()
-	<-t.clientReadyChan
+	t.clientExitChan = make(chan struct{}, 0)
+	clientReadyChan := make(chan struct{}, 0)
+	go t.clientWorker(clientReadyChan)
+	<-clientReadyChan
 
 	t.clientRefCount++
 	return nil
@@ -315,10 +318,10 @@ func (t *Transport) dialServer() error {
 	}
 
 	// Start the server worker and wait for it to ack that its up & running
-	t.outgoingReqChan = make(chan *rpc, 0)
-	t.serverReadyChan = make(chan struct{}, 0)
-	go t.serverWorker()
-	<-t.serverReadyChan
+	t.serverExitChan = make(chan struct{}, 1)
+	serverStartedChan := make(chan struct{}, 0)
+	go t.serverWorker(serverStartedChan)
+	<-serverStartedChan
 
 	t.serverRefCount++
 	return nil
@@ -365,9 +368,9 @@ func (t *Transport) Close(mode transport.Mode) error {
 		// Ref counter reached zero; signal the server worker to shut down.
 		// Since the worker uses read locks we need to release the lock
 		// so as not to block the server go-routine.
-		t.serverReadyChan <- struct{}{}
+		close(t.serverExitChan)
 		t.rwMutex.Unlock()
-		<-t.serverReadyChan
+		t.serverPendingRequests.Wait()
 	default:
 		if t.clientRefCount == 0 {
 			t.rwMutex.Unlock()
@@ -383,10 +386,9 @@ func (t *Transport) Close(mode transport.Mode) error {
 		// Ref counter reached zero; signal the client worker to shut down.
 		// Since the worker uses read locks we need to release the lock
 		// so as not to block the client go-routine.
-		t.clientReadyChan <- struct{}{}
-		t.rwMutex.Unlock()
-		<-t.clientReadyChan
+		close(t.clientExitChan)
 		close(t.outgoingReqChan)
+		t.rwMutex.Unlock()
 	}
 
 	return nil
@@ -451,30 +453,20 @@ func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMes
 		resChan: make(chan transport.ImmutableMessage, 1),
 	}
 
-	go func() {
-		select {
-		case t.outgoingReqChan <- rpc:
-		case <-t.clientReadyChan:
-			rpc.respondWithError(transport.ErrTransportClosed)
-		}
-	}()
+	t.rwMutex.RLock()
+	if t.clientRefCount == 0 {
+		rpc.respondWithError(transport.ErrTransportClosed)
+	} else {
+		t.outgoingReqChan <- rpc
+	}
+	t.rwMutex.RUnlock()
 
 	return rpc.resChan
 }
 
-func (t *Transport) serverWorker() {
-	var pendingServerRequests sync.WaitGroup
-
-	defer func() {
-		// Wait for spawned server request go-routines to finish
-		pendingServerRequests.Wait()
-
-		// Signal Close() that we exited
-		close(t.serverReadyChan)
-	}()
-
-	// Signal dialServer() that worker has started
-	t.serverReadyChan <- struct{}{}
+func (t *Transport) serverWorker(serverStartedChan chan struct{}) {
+	// Signal dialServer() that the worker has started
+	close(serverStartedChan)
 
 	for {
 		select {
@@ -482,7 +474,7 @@ func (t *Transport) serverWorker() {
 			if !ok {
 				return
 			}
-			pendingServerRequests.Add(1)
+			t.serverPendingRequests.Add(1)
 			t.rwMutex.RLock()
 			b := t.bindings[amqpReq.RoutingKey]
 			t.rwMutex.RUnlock()
@@ -491,7 +483,12 @@ func (t *Transport) serverWorker() {
 				req := decodeAmqpRequest(amqpReq, b)
 				res := transport.MakeGenericMessage()
 
-				b.handler.Process(req, res)
+				switch b {
+				case nil:
+					res.SetPayload(nil, transport.ErrNotFound)
+				default:
+					b.handler.Process(req, res)
+				}
 
 				// Build amqp response
 				headers := amqpClient.Table{}
@@ -501,8 +498,8 @@ func (t *Transport) serverWorker() {
 				payload, err := res.Payload()
 				amqpRes := amqpClient.Publishing{
 					CorrelationId: req.ID(),
-					AppId:         res.Sender(),
-					UserId:        res.SenderEndpoint(),
+					AppId:         req.Receiver(),
+					UserId:        req.ReceiverEndpoint(),
 					Headers:       headers,
 				}
 
@@ -522,7 +519,7 @@ func (t *Transport) serverWorker() {
 					amqpRes,
 				)
 
-				if err != nil {
+				if err == nil {
 					amqpReq.Ack(false)
 				} else {
 					amqpReq.Nack(false, false)
@@ -530,15 +527,15 @@ func (t *Transport) serverWorker() {
 
 				req.Close()
 				res.Close()
-				pendingServerRequests.Done()
+				t.serverPendingRequests.Done()
 			}(&amqpReq, b)
-		case <-t.serverReadyChan:
+		case <-t.serverExitChan:
 			return
 		}
 	}
 }
 
-func (t *Transport) clientWorker() {
+func (t *Transport) clientWorker(clientReadyChan chan struct{}) {
 	pendingClientRequests := make(map[string]*rpc, 0)
 
 	defer func() {
@@ -546,13 +543,10 @@ func (t *Transport) clientWorker() {
 		for _, rpc := range pendingClientRequests {
 			rpc.respondWithError(transport.ErrServiceUnavailable)
 		}
-
-		// Signal Close() that we exited
-		close(t.clientReadyChan)
 	}()
 
 	// Signal dialClient that worker has started
-	t.clientReadyChan <- struct{}{}
+	close(clientReadyChan)
 
 	for {
 		select {
@@ -633,7 +627,7 @@ func (t *Transport) clientWorker() {
 			}
 
 			rpc.respondWithError(err)
-		case <-t.clientReadyChan:
+		case <-t.clientExitChan:
 			return
 		}
 	}
@@ -644,9 +638,11 @@ func decodeAmqpRequest(amqpReq *amqpClient.Delivery, b *binding) transport.Messa
 	req.IDField = amqpReq.CorrelationId
 	req.SenderField = amqpReq.AppId
 	req.SenderEndpointField = amqpReq.UserId
-	req.ReceiverField = b.service
-	req.ReceiverEndpointField = b.endpoint
-	req.ReceiverVersionField = b.version
+	if b != nil {
+		req.ReceiverField = b.service
+		req.ReceiverEndpointField = b.endpoint
+		req.ReceiverVersionField = b.version
+	}
 	req.PayloadField = amqpReq.Body
 
 	for k, v := range amqpReq.Headers {
@@ -689,15 +685,10 @@ func decodeAmqpResponse(amqpRes *amqpClient.Delivery, res transport.Message) {
 	res.SetPayload(payload, err)
 }
 
-// Factory is a factory for creating usrv transport instances
-// whose concrete implementation is the amqp transport. This function behaves
-// exactly the same as New() but returns back a Transport interface allowing
-// it to be used as usrv.DefaultTransportFactory.
-//
-// To prevent the creation of different amqp connections when using a server and
-// multiple clients, this factory returns a singleton ref-counted transport instance
-// that is shared between clients and servers.
-func Factory() transport.Provider {
+// SingletonFactory is a factory for creating singleton AMQP transport
+// instances. This function returns back a Transport interface allowing it to
+// be used as usrv.DefaultTransportFactory.
+func SingletonFactory() transport.Provider {
 	return singleton
 }
 
