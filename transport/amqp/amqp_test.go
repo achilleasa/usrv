@@ -1,16 +1,26 @@
 package amqp
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"net"
+	"os"
 	"reflect"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/achilleasa/usrv/transport"
 	amqpClient "github.com/streadway/amqp"
+)
+
+const (
+	amqpFrameTerminator byte = 0xCE
 )
 
 func TestDialServerErrors(t *testing.T) {
@@ -124,6 +134,11 @@ func TestDialClientErrors(t *testing.T) {
 }
 
 func TestServerDisconnectHandling(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{
 		consumeChan: make(chan amqpClient.Delivery, 0),
 	}
@@ -150,6 +165,11 @@ func TestServerDisconnectHandling(t *testing.T) {
 }
 
 func TestBindAndUnbind(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{}
 	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
 		return mc, mc, nil
@@ -170,7 +190,7 @@ func TestBindAndUnbind(t *testing.T) {
 	expError := `binding (version: "", service: "foo", endpoint: "endpoint") already defined`
 	err = tr.Bind("", "foo", "endpoint", transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {}))
 	if err == nil || err.Error() != expError {
-		t.Fatal("expected to get error %q; got %v", expError, err)
+		t.Fatalf("expected to get error %q; got %v", expError, err)
 	}
 
 	tr.Unbind("", "foo", "endpoint")
@@ -184,6 +204,11 @@ func TestBindAndUnbind(t *testing.T) {
 }
 
 func TestRequestForInvalidBinding(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{
 		consumeChan: make(chan amqpClient.Delivery, 0),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
@@ -223,12 +248,17 @@ func TestRequestForInvalidBinding(t *testing.T) {
 		t.Fatalf("expected response body to be %v; got %s", transport.ErrNotFound, bodyAsStr)
 	}
 
-	if pub.AppId != "" || pub.UserId != "" {
-		t.Fatalf("expected response appID and userID to be empty; got %q, %q", pub.AppId, pub.UserId)
+	if pub.AppId != "" || pub.Type != "" {
+		t.Fatalf("expected response appID and userID to be empty; got %q, %q", pub.AppId, pub.Type)
 	}
 }
 
 func TestRequestForValidBinding(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{
 		consumeChan: make(chan amqpClient.Delivery, 0),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
@@ -264,6 +294,10 @@ func TestRequestForValidBinding(t *testing.T) {
 
 		if !reflect.DeepEqual(reqMsg.Headers(), req.Headers()) {
 			t.Errorf("expected req headers to be %v; got %v", req.Headers(), reqMsg.Headers())
+		}
+
+		if reqMsg.Sender() != req.Sender() {
+			t.Errorf("expected req sender to be %s; got %s", req.Sender(), reqMsg.Sender())
 		}
 
 		if reqMsg.SenderEndpoint() != req.SenderEndpoint() {
@@ -314,8 +348,8 @@ func TestRequestForValidBinding(t *testing.T) {
 		t.Errorf("expected response body to be %s; got %s", string(expPayload), string(pub.Body))
 	}
 
-	if pub.AppId != req.Receiver() || pub.UserId != req.ReceiverEndpoint() {
-		t.Errorf("expected response appID and userID to be %q, %q; got %q, %q", req.Receiver(), req.ReceiverEndpoint(), pub.AppId, pub.UserId)
+	if pub.AppId != req.Receiver() || pub.Type != req.ReceiverEndpoint() {
+		t.Errorf("expected response appID and userID to be %q, %q; got %q, %q", req.Receiver(), req.ReceiverEndpoint(), pub.AppId, pub.Type)
 	}
 
 	expAckCount := 1
@@ -325,6 +359,11 @@ func TestRequestForValidBinding(t *testing.T) {
 }
 
 func TestRequestForValidBindingWhenPublishFails(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{
 		consumeChan: make(chan amqpClient.Delivery, 0),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
@@ -388,6 +427,11 @@ func TestClientRequestWithClosedTransport(t *testing.T) {
 }
 
 func TestClientWorkerPublishRequest(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{
 		pubQueue: make(chan amqpClient.Publishing, 1),
 	}
@@ -436,12 +480,17 @@ func TestClientWorkerPublishRequest(t *testing.T) {
 		t.Errorf("expected response body to be %s; got %s", string(req.PayloadField), string(pub.Body))
 	}
 
-	if pub.AppId != req.Sender() || pub.UserId != req.SenderEndpoint() {
-		t.Errorf("expected response appID and userID to be %q, %q; got %q, %q", req.Sender(), req.SenderEndpoint(), pub.AppId, pub.UserId)
+	if pub.AppId != req.Sender() || pub.Type != req.SenderEndpoint() {
+		t.Errorf("expected response appID and userID to be %q, %q; got %q, %q", req.Sender(), req.SenderEndpoint(), pub.AppId, pub.Type)
 	}
 }
 
 func TestClientWorkerWhenPublishFails(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{
 		pubQueue: make(chan amqpClient.Publishing, 1),
 	}
@@ -479,6 +528,11 @@ func TestClientWorkerWhenPublishFails(t *testing.T) {
 }
 
 func TestClientWorkerWhenReceivingResponses(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{
 		consumeChan: make(chan amqpClient.Delivery, 0),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
@@ -559,6 +613,11 @@ func TestClientWorkerWhenReceivingResponses(t *testing.T) {
 }
 
 func TestClientWorkerWhenReceivingResponsesWithBogusID(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{
 		consumeChan: make(chan amqpClient.Delivery, 0),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
@@ -605,6 +664,11 @@ func TestClientWorkerWhenReceivingResponsesWithBogusID(t *testing.T) {
 }
 
 func TestClientWorkerReturnHandling(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{
 		pubQueue: make(chan amqpClient.Publishing, 1),
 	}
@@ -660,12 +724,17 @@ func TestClientWorkerReturnHandling(t *testing.T) {
 
 		_, err := resMsg.Payload()
 		if err != spec.ExpError {
-			t.Errorf("[spec %d] expected to get error %v; got %v", spec.ExpError, err)
+			t.Errorf("[spec %d] expected to get error %v; got %v", specIndex, spec.ExpError, err)
 		}
 	}
 }
 
 func TestClientWorkerReturnHandlingWithBogusID(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
 	mc := &mockChannel{
 		pubQueue: make(chan amqpClient.Publishing, 1),
 	}
@@ -758,10 +827,258 @@ func TestAmqpResponseDecoder(t *testing.T) {
 			}
 
 			if !bytes.Equal(payload, spec.ExpPayload) {
-				t.Errorf("[spec %d] expected to get payload %v; got %v", spec.ExpPayload, payload)
+				t.Errorf("[spec %d] expected to get payload %v; got %v", specIndex, spec.ExpPayload, payload)
 			}
 		}
 	}
+}
+
+func TestConcurrentRequestsUsingRealAmqp(t *testing.T) {
+	amqpEnvFlag := os.Getenv("TRANSPORT_AMQP_URI")
+	if testing.Short() || amqpEnvFlag == "" {
+		t.Skip("skipping real AMQP instance integration test")
+	}
+
+	tr := New()
+	tr.amqpURI.Set(amqpEnvFlag)
+
+	if err := tr.Dial(transport.ModeServer); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeServer)
+
+	if err := tr.Dial(transport.ModeClient); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	expReqHeaders := map[string]string{
+		"Foo": "foo_val",
+		"Bar": "bar_val",
+	}
+	expResHeaders := map[string]string{
+		"Foo": "foo_val1",
+		"Bar": "bar_val2",
+	}
+	expSender := "from_service"
+	expSenderEndpoint := "from_endpoint"
+	expReceiver := "to_service"
+	expReceiverEndpoint := "to_endpoint"
+
+	handler := transport.HandlerFunc(func(reqMsg transport.ImmutableMessage, resMsg transport.Message) {
+		if !reflect.DeepEqual(reqMsg.Headers(), expReqHeaders) {
+			t.Errorf("[msg %s] expected req headers to be %v; got %v", reqMsg.ID(), expReqHeaders, reqMsg.Headers())
+		}
+
+		if reqMsg.Sender() != expSender {
+			t.Errorf("[msg %s] expected req sender endpoint to be %s; got %s", reqMsg.ID(), expSender, reqMsg.Sender())
+		}
+		if reqMsg.SenderEndpoint() != expSenderEndpoint {
+			t.Errorf("[msg %s] expected req sender endpoint to be %s; got %s", reqMsg.ID(), expSenderEndpoint, reqMsg.SenderEndpoint())
+		}
+
+		if reqMsg.Receiver() != expReceiver {
+			t.Errorf("[msg %s] expected req receiver to be %s; got %s", reqMsg.ID(), expReceiver, reqMsg.Receiver())
+		}
+
+		if reqMsg.ReceiverEndpoint() != expReceiverEndpoint {
+			t.Errorf("[msg %s] expected req receiver endpoint to be %s; got %s", reqMsg.ID(), expReceiverEndpoint, reqMsg.ReceiverEndpoint())
+		}
+
+		payload, err := reqMsg.Payload()
+		if err != nil {
+			t.Error(err)
+		}
+
+		expPayload := []byte(fmt.Sprintf("request %s", reqMsg.ID()))
+		if !bytes.Equal(payload, expPayload) {
+			t.Errorf("[msg %s] expected request body to be %s; got %s", reqMsg.ID(), string(expPayload), string(payload))
+		}
+
+		// Build response
+		resMsg.SetHeaders(expResHeaders)
+		resMsg.SetPayload([]byte(fmt.Sprintf("response %s", reqMsg.ID())), nil)
+	})
+
+	if err := tr.Bind("", expReceiver, expReceiverEndpoint, handler); err != nil {
+		t.Fatal(err)
+	}
+
+	numReqs := 100
+	var wg sync.WaitGroup
+	wg.Add(numReqs)
+	for i := 0; i < numReqs; i++ {
+		go func(reqId int) {
+			defer wg.Done()
+
+			reqMsg := transport.MakeGenericMessage()
+			reqMsg.IDField = fmt.Sprint(reqId)
+			reqMsg.SenderField = expSender
+			reqMsg.SenderEndpointField = expSenderEndpoint
+			reqMsg.ReceiverField = expReceiver
+			reqMsg.ReceiverEndpointField = expReceiverEndpoint
+			reqMsg.HeadersField = expReqHeaders
+			reqMsg.PayloadField = []byte(fmt.Sprintf("request %s", reqMsg.ID()))
+			resMsg := <-tr.Request(reqMsg)
+
+			if resMsg.Sender() != expReceiver {
+				t.Errorf("[msg %s] expected res sender endpoint to be %s; got %s", resMsg.ID(), expReceiver, resMsg.Sender())
+			}
+			if resMsg.SenderEndpoint() != expReceiverEndpoint {
+				t.Errorf("[msg %s] expected res sender endpoint to be %s; got %s", resMsg.ID(), expReceiverEndpoint, resMsg.SenderEndpoint())
+			}
+
+			if resMsg.Receiver() != expSender {
+				t.Errorf("[msg %s] expected res receiver to be %s; got %s", resMsg.ID(), expSender, resMsg.Receiver())
+			}
+
+			if resMsg.ReceiverEndpoint() != expSenderEndpoint {
+				t.Errorf("[msg %s] expected res receiver endpoint to be %s; got %s", resMsg.ID(), expSenderEndpoint, resMsg.ReceiverEndpoint())
+			}
+
+			payload, err := resMsg.Payload()
+			if err != nil {
+				t.Errorf("[msg %s] received error response %v", reqMsg.ID(), err)
+				return
+			}
+
+			expPayload := []byte(fmt.Sprintf("response %s", reqMsg.ID()))
+			if !bytes.Equal(payload, expPayload) {
+				t.Errorf("[msg %s] expected response payload to be %s; got %v", reqMsg.ID(), string(expPayload), payload)
+				return
+			}
+
+			if !reflect.DeepEqual(resMsg.Headers(), expResHeaders) {
+				t.Errorf("[msg %s] expected response headers to be %v; got %v", reqMsg.ID(), expResHeaders, resMsg.Headers())
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestRoutingErrorsUsingRealAmqp(t *testing.T) {
+	amqpEnvFlag := os.Getenv("TRANSPORT_AMQP_URI")
+	if testing.Short() || amqpEnvFlag == "" {
+		t.Skip("skipping real AMQP instance integration test")
+	}
+
+	tr := New()
+	tr.amqpURI.Set(amqpEnvFlag)
+
+	if err := tr.Dial(transport.ModeClient); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	reqMsg := transport.MakeGenericMessage()
+	reqMsg.SenderField = "from_service"
+	reqMsg.SenderEndpointField = "from_endpoint"
+	reqMsg.ReceiverField = "to_service"
+	reqMsg.ReceiverEndpointField = "to_endpoint"
+	resMsg := <-tr.Request(reqMsg)
+
+	if _, err := resMsg.Payload(); err != transport.ErrServiceUnavailable {
+		t.Fatalf("expected to get ErrServiceUnavailable; got %v", err)
+	}
+}
+
+func TestDialErrorsUsingRealAmqp(t *testing.T) {
+	amqpEnvFlag := os.Getenv("TRANSPORT_AMQP_URI")
+	if testing.Short() || amqpEnvFlag == "" {
+		t.Skip("skipping real AMQP instance integration test")
+	}
+
+	tr := New()
+	tr.amqpURI.Set("invalid")
+
+	if err := tr.Dial(transport.ModeClient); err == nil {
+		t.Fatal("expected dial to fail")
+	}
+}
+
+func TestChannelErrorsUsingRealAmqp(t *testing.T) {
+	amqpEnvFlag := os.Getenv("TRANSPORT_AMQP_URI")
+	if testing.Short() || amqpEnvFlag == "" {
+		t.Skip("skipping real AMQP instance integration test")
+	}
+
+	specs := [][]byte{
+		// connection ok frame
+		[]byte{0x0a, 0x00, 0x29, 0x00, amqpFrameTerminator},
+		// channel ok frame
+		[]byte{0x14, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x00, amqpFrameTerminator},
+	}
+
+	tr := New()
+	for specIndex, framePattern := range specs {
+		proxyListener := amqpProxy(t, amqpEnvFlag, framePattern)
+		defer proxyListener.Close()
+
+		tr.amqpURI.Set(fmt.Sprintf("amqp://guest:guest@%s/", proxyListener.Addr().String()))
+		err := tr.Dial(transport.ModeClient)
+		if err == nil {
+			t.Errorf("[spec %d] expected tr.Dial() to return an error", specIndex)
+		}
+	}
+}
+
+func TestFactory(t *testing.T) {
+	tr1 := SingletonFactory()
+	tr2 := SingletonFactory()
+
+	if tr1 != tr2 {
+		t.Fatalf("expected singleton factory to return the same instance")
+	}
+}
+
+func amqpProxy(t *testing.T, amqpHost string, matchPattern []byte) net.Listener {
+	amqpHost = strings.Replace(strings.Split(amqpHost, "@")[1], "/", "", -1)
+	ln, err := net.Listen("tcp4", "localhost:")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		for {
+			srcConn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+
+			dstConn, err := net.Dial("tcp4", amqpHost)
+			if err != nil {
+				srcConn.Close()
+				return
+			}
+
+			// Pipe srcConn data to dstConn
+			go io.Copy(dstConn, srcConn)
+
+			// Read amqp frames from dstConn and pipe them to srcConn
+			// until we encounter matchPattern in the frame data.
+			go func() {
+				bufReader := bufio.NewReader(dstConn)
+				for {
+					frame, err := bufReader.ReadBytes(amqpFrameTerminator)
+					if err != nil {
+						return
+					}
+
+					// If the data contains our match pattern close both connections.
+					if matchPattern != nil && bytes.Contains(frame, matchPattern) {
+						srcConn.Write([]byte{0xDE, 0xAD, 0xBE, 0xEF, amqpFrameTerminator})
+						//dstConn.Close()
+						//srcConn.Close()
+						//return
+					}
+
+					srcConn.Write(frame)
+				}
+			}()
+		}
+	}()
+
+	return ln
 }
 
 func makeAmqpDelivery(msg transport.ImmutableMessage, mc amqpChannel) amqpClient.Delivery {
@@ -769,7 +1086,7 @@ func makeAmqpDelivery(msg transport.ImmutableMessage, mc amqpChannel) amqpClient
 		RoutingKey:    routingKey(msg.ReceiverVersion(), msg.Receiver(), msg.ReceiverEndpoint()),
 		CorrelationId: msg.ID(),
 		AppId:         msg.Sender(),
-		UserId:        msg.SenderEndpoint(),
+		Type:          msg.SenderEndpoint(),
 		Headers:       amqpClient.Table{},
 		Acknowledger:  mc,
 	}
@@ -788,15 +1105,6 @@ func makeAmqpDelivery(msg transport.ImmutableMessage, mc amqpChannel) amqpClient
 	}
 
 	return d
-}
-
-func TestFactory(t *testing.T) {
-	tr1 := SingletonFactory()
-	tr2 := SingletonFactory()
-
-	if tr1 != tr2 {
-		t.Fatalf("expected singleton factory to return the same instance")
-	}
 }
 
 type mockChannel struct {
@@ -827,7 +1135,7 @@ func (mc *mockChannel) Reject(tag uint64, requeue bool) error {
 	return nil
 }
 
-func (mc *mockChannel) Rejectkount() int {
+func (mc *mockChannel) RejectCount() int {
 	return int(atomic.LoadInt32(&mc.rejectCount))
 }
 
