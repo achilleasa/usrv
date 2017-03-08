@@ -111,6 +111,7 @@ func routingKey(version, service, endpoint string) string {
 	return fmt.Sprintf("%s/%s/%s", version, service, endpoint)
 }
 
+// Transport implements a usrv transport using AMQP.
 type Transport struct {
 	rwMutex sync.RWMutex
 
@@ -499,7 +500,7 @@ func (t *Transport) serverWorker(serverStartedChan chan struct{}) {
 				amqpRes := amqpClient.Publishing{
 					CorrelationId: req.ID(),
 					AppId:         req.Receiver(),
-					UserId:        req.ReceiverEndpoint(),
+					Type:          req.ReceiverEndpoint(),
 					Headers:       headers,
 				}
 
@@ -570,8 +571,8 @@ func (t *Transport) clientWorker(clientReadyChan chan struct{}) {
 				ReplyTo:       t.amqpReplyQueueName,
 				CorrelationId: rpc.req.ID(),
 				// Encode from service/endpoint
-				AppId:  rpc.req.Sender(),
-				UserId: rpc.req.SenderEndpoint(),
+				AppId: rpc.req.Sender(),
+				Type:  rpc.req.SenderEndpoint(),
 			}
 			routingKey := routingKey(rpc.req.ReceiverVersion(), rpc.req.Receiver(), rpc.req.ReceiverEndpoint())
 
@@ -583,7 +584,7 @@ func (t *Transport) clientWorker(clientReadyChan chan struct{}) {
 				pub,
 			)
 
-			// Error occured; just report the error back
+			// Error occurred; just report the error back
 			if err != nil {
 				rpc.respondWithError(err)
 				continue
@@ -637,7 +638,7 @@ func decodeAmqpRequest(amqpReq *amqpClient.Delivery, b *binding) transport.Messa
 	req := transport.MakeGenericMessage()
 	req.IDField = amqpReq.CorrelationId
 	req.SenderField = amqpReq.AppId
-	req.SenderEndpointField = amqpReq.UserId
+	req.SenderEndpointField = amqpReq.Type
 	if b != nil {
 		req.ReceiverField = b.service
 		req.ReceiverEndpointField = b.endpoint
