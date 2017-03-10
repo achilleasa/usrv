@@ -833,6 +833,81 @@ func TestAmqpResponseDecoder(t *testing.T) {
 	}
 }
 
+func TestRefCounting(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
+	mc := &mockChannel{
+		pubQueue: make(chan amqpClient.Publishing, 1),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
+		return mc, mc, nil
+	}
+
+	var err error
+	tr := New()
+
+	// Dial twice in server and in client mode
+	for i := 0; i < 2; i++ {
+		if err = tr.Dial(transport.ModeServer); err != nil {
+			t.Fatal(err)
+		}
+		if err = tr.Dial(transport.ModeClient); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Close a client and a server
+	if err = tr.Close(transport.ModeClient); err != nil {
+		t.Fatal(err)
+	}
+	if err = tr.Close(transport.ModeServer); err != nil {
+		t.Fatal(err)
+	}
+
+	if mc.CloseCount() != 0 {
+		t.Fatalf("expected transport not to close the amqp channel; channel.Close calls: %d", mc.CloseCount())
+	}
+
+	// Close the second client. The transport channel should stay open for
+	// the server and calls to Close(transport.ModeClient) and Request should
+	// now fail with ErrTransportClosed
+	if err = tr.Close(transport.ModeClient); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = tr.Close(transport.ModeClient); err != transport.ErrTransportClosed {
+		t.Fatal("expected calling Close when client refCount set to 0 to return ErrTransportClosed; got %v", err)
+	}
+
+	res := <-tr.Request(transport.MakeGenericMessage())
+	if _, err = res.Payload(); err != transport.ErrTransportClosed {
+		t.Fatal("expected calling Request when client refCount set to 0 to return ErrTransportClosed; got %v", err)
+	}
+
+	if mc.CloseCount() != 0 {
+		t.Fatalf("expected transport not to close the amqp channel; channel.Close calls: %d", mc.CloseCount())
+	}
+
+	// When we close the second server, the transport should close the channel AND the amqp connection
+	// Since we use the same mock for both, we expect mockChannel to receive 2 close calls
+	if err = tr.Close(transport.ModeServer); err != nil {
+		t.Fatal(err)
+	}
+
+	expCloseCount := 2
+	if mc.CloseCount() != expCloseCount {
+		t.Fatalf("expected mock close count to be %d; got %d", expCloseCount, mc.CloseCount())
+	}
+
+	// Trying to close the server again should fail with ErrTransportClosed
+	if err = tr.Close(transport.ModeServer); err != transport.ErrTransportClosed {
+		t.Fatal("expected calling Close when server refCount set to 0 to return ErrTransportClosed; got %v", err)
+	}
+}
+
 func TestConcurrentRequestsUsingRealAmqp(t *testing.T) {
 	amqpEnvFlag := os.Getenv("TRANSPORT_AMQP_URI")
 	if testing.Short() || amqpEnvFlag == "" {
@@ -1124,6 +1199,7 @@ type mockChannel struct {
 	ackCount    int32
 	nackCount   int32
 	rejectCount int32
+	closeCount  int32
 }
 
 func (mc *mockChannel) Reject(tag uint64, requeue bool) error {
@@ -1201,5 +1277,14 @@ func (mc *mockChannel) Consume(queue, consumer string, autoAck, exclusive, noLoc
 }
 
 func (mc *mockChannel) Close() error {
-	return mc.closeErr
+	if mc.closeErr != nil {
+		return mc.closeErr
+	}
+
+	atomic.AddInt32(&mc.closeCount, 1)
+	return nil
+}
+
+func (mc *mockChannel) CloseCount() int {
+	return int(atomic.LoadInt32(&mc.closeCount))
 }
