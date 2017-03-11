@@ -1278,8 +1278,7 @@ func TestClientRedialUsingRealAmqp(t *testing.T) {
 	defer tr.Close(transport.ModeClient)
 
 	<-time.After(100 * time.Millisecond)
-	proxy.srcConn.Close()
-	proxy.dstConn.Close()
+	proxy.killConnChan <- struct{}{}
 	<-time.After(100 * time.Millisecond)
 
 	// Transport should automatically re-dial
@@ -1306,8 +1305,7 @@ func TestServerRedialUsingRealAmqp(t *testing.T) {
 	defer tr.Close(transport.ModeServer)
 
 	<-time.After(100 * time.Millisecond)
-	proxy.srcConn.Close()
-	proxy.dstConn.Close()
+	proxy.killConnChan <- struct{}{}
 	<-time.After(100 * time.Millisecond)
 
 	// Transport should automatically re-dial
@@ -1327,9 +1325,8 @@ func TestFactory(t *testing.T) {
 }
 
 type amqpProxy struct {
-	connections int32
-	srcConn     net.Conn
-	dstConn     net.Conn
+	connections  int32
+	killConnChan chan struct{}
 
 	matchPattern []byte
 
@@ -1337,44 +1334,49 @@ type amqpProxy struct {
 }
 
 func (p *amqpProxy) connWorker(realAmqpHost string) {
-	var err error
+	p.killConnChan = make(chan struct{}, 0)
+
 	for {
-		p.srcConn, err = p.proxyListener.Accept()
+		srcConn, err := p.proxyListener.Accept()
 		if err != nil {
 			return
 		}
 
-		p.dstConn, err = net.Dial("tcp4", realAmqpHost)
+		dstConn, err := net.Dial("tcp4", realAmqpHost)
 		if err != nil {
-			p.srcConn.Close()
+			srcConn.Close()
 			return
 		}
 
 		atomic.AddInt32(&p.connections, 1)
 
 		// Pipe srcConn data to dstConn
-		go io.Copy(p.dstConn, p.srcConn)
+		go io.Copy(dstConn, srcConn)
 
 		// Read amqp frames from dstConn and pipe them to srcConn
 		// until we encounter matchPattern in the frame data.
-		go func() {
-			bufReader := bufio.NewReader(p.dstConn)
+		go func(killConnChan chan struct{}) {
+			bufReader := bufio.NewReader(dstConn)
 			for {
 				frame, err := bufReader.ReadBytes(amqpFrameTerminator)
 				if err != nil {
+					killConnChan <- struct{}{}
 					return
 				}
 
 				// If the data contains our match pattern close both connections.
 				if p.matchPattern != nil && bytes.Contains(frame, p.matchPattern) {
-					p.dstConn.Close()
-					p.srcConn.Close()
+					killConnChan <- struct{}{}
 					return
 				}
 
-				p.srcConn.Write(frame)
+				srcConn.Write(frame)
 			}
-		}()
+		}(p.killConnChan)
+
+		<-p.killConnChan
+		srcConn.Close()
+		dstConn.Close()
 	}
 }
 
@@ -1383,12 +1385,6 @@ func (p *amqpProxy) ConnectionCount() int {
 }
 
 func (p *amqpProxy) Close() error {
-	if p.srcConn != nil {
-		p.srcConn.Close()
-	}
-	if p.dstConn != nil {
-		p.dstConn.Close()
-	}
 	return p.proxyListener.Close()
 }
 

@@ -133,9 +133,8 @@ type Transport struct {
 	// to this queue.
 	amqpRequestQueueName string
 
-	amqpConnCloser    io.Closer
-	amqpChan          amqpChannel
-	amqpConnCloseChan chan *amqpClient.Error
+	amqpConnCloser io.Closer
+	amqpChan       amqpChannel
 
 	// The dispatch worker monitors this channel for usrv outgoing requests (client mode).
 	outgoingReqChan chan *rpc
@@ -184,7 +183,8 @@ func (t *Transport) dialAndVerifyExchange() error {
 	}
 
 	var err error
-	t.amqpChan, t.amqpConnCloser, t.amqpConnCloseChan, err = dialAndGetChan(t.amqpURI.Get())
+	var amqpConnCloseChan chan *amqpClient.Error
+	t.amqpChan, t.amqpConnCloser, amqpConnCloseChan, err = dialAndGetChan(t.amqpURI.Get())
 	if err != nil {
 		return err
 	}
@@ -206,12 +206,12 @@ func (t *Transport) dialAndVerifyExchange() error {
 	}
 
 	t.connMonitorExitChan = make(chan struct{}, 0)
-	go func() {
+	go func(monitorExitChan chan struct{}) {
 		for {
 			select {
-			case <-t.connMonitorExitChan:
+			case <-monitorExitChan:
 				return
-			case err := <-t.amqpConnCloseChan:
+			case err := <-amqpConnCloseChan:
 				// The driver closes the channel when the connection closes
 				// so we only need to react to incoming errors
 				if err != nil {
@@ -220,7 +220,7 @@ func (t *Transport) dialAndVerifyExchange() error {
 				}
 			}
 		}
-	}()
+	}(t.connMonitorExitChan)
 
 	return nil
 }
@@ -273,9 +273,7 @@ func (t *Transport) dialClient() error {
 	// Start the client worker and wait for it to ack that its up & running
 	t.outgoingReqChan = make(chan *rpc, 0)
 	t.clientExitChan = make(chan struct{}, 0)
-	clientReadyChan := make(chan struct{}, 0)
-	go t.clientWorker(clientReadyChan)
-	<-clientReadyChan
+	<-t.clientWorker()
 
 	t.clientRefCount++
 	return nil
@@ -340,9 +338,7 @@ func (t *Transport) dialServer() error {
 
 	// Start the server worker and wait for it to ack that its up & running
 	t.serverExitChan = make(chan struct{}, 1)
-	serverStartedChan := make(chan struct{}, 0)
-	go t.serverWorker(serverStartedChan)
-	<-serverStartedChan
+	<-t.serverWorker()
 
 	t.serverRefCount++
 	return nil
@@ -369,6 +365,7 @@ func (t *Transport) redial() {
 			t.amqpChan = nil
 			t.amqpConnCloser = nil
 			close(t.connMonitorExitChan)
+			t.connMonitorExitChan = nil
 			return
 		}
 
@@ -380,6 +377,7 @@ func (t *Transport) redial() {
 			t.amqpChan = nil
 			t.amqpConnCloser = nil
 			close(t.connMonitorExitChan)
+			t.connMonitorExitChan = nil
 			return
 		}
 
@@ -528,173 +526,198 @@ func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMes
 	return rpc.resChan
 }
 
-func (t *Transport) serverWorker(serverStartedChan chan struct{}) {
-	// Signal dialServer() that the worker has started
-	close(serverStartedChan)
+func (t *Transport) serverWorker() chan struct{} {
+	serverStartedChan := make(chan struct{}, 0)
 
-	for {
-		select {
-		case amqpReq, ok := <-t.incomingReqChan:
-			if !ok {
+	// Keep local copies of the channels we need. This prevents data-race
+	// warnings when running tests that involve redialing the transport
+	incomingReqChan := t.incomingReqChan
+	serverExitChan := t.serverExitChan
+
+	go func() {
+		// Signal that the worker has started
+		close(serverStartedChan)
+
+		for {
+			select {
+			case amqpReq, ok := <-incomingReqChan:
+				if !ok {
+					return
+				}
+				t.serverPendingRequests.Add(1)
+				t.rwMutex.RLock()
+				b := t.bindings[amqpReq.RoutingKey]
+				t.rwMutex.RUnlock()
+
+				go func(amqpReq *amqpClient.Delivery, b *binding) {
+					req := decodeAmqpRequest(amqpReq, b)
+					res := transport.MakeGenericMessage()
+
+					switch b {
+					case nil:
+						res.SetPayload(nil, transport.ErrNotFound)
+					default:
+						b.handler.Process(req, res)
+					}
+
+					// Build amqp response
+					headers := amqpClient.Table{}
+					for k, v := range res.Headers() {
+						headers[k] = v
+					}
+					payload, err := res.Payload()
+					amqpRes := amqpClient.Publishing{
+						CorrelationId: req.ID(),
+						AppId:         req.Receiver(),
+						Type:          req.ReceiverEndpoint(),
+						Headers:       headers,
+					}
+
+					if err != nil {
+						amqpRes.ContentType = contentTypeError
+						amqpRes.Body = []byte(err.Error())
+					} else {
+						amqpRes.ContentType = contentTypeUsrvData
+						amqpRes.Body = payload
+					}
+
+					err = t.amqpChan.Publish(
+						"",              // default exchange
+						amqpReq.ReplyTo, // reply to client's private queue
+						true,            // mandatory
+						false,           // immediate
+						amqpRes,
+					)
+
+					if err == nil {
+						amqpReq.Ack(false)
+					} else {
+						amqpReq.Nack(false, false)
+					}
+
+					req.Close()
+					res.Close()
+					t.serverPendingRequests.Done()
+				}(&amqpReq, b)
+			case <-serverExitChan:
 				return
 			}
-			t.serverPendingRequests.Add(1)
-			t.rwMutex.RLock()
-			b := t.bindings[amqpReq.RoutingKey]
-			t.rwMutex.RUnlock()
-
-			go func(amqpReq *amqpClient.Delivery, b *binding) {
-				req := decodeAmqpRequest(amqpReq, b)
-				res := transport.MakeGenericMessage()
-
-				switch b {
-				case nil:
-					res.SetPayload(nil, transport.ErrNotFound)
-				default:
-					b.handler.Process(req, res)
-				}
-
-				// Build amqp response
-				headers := amqpClient.Table{}
-				for k, v := range res.Headers() {
-					headers[k] = v
-				}
-				payload, err := res.Payload()
-				amqpRes := amqpClient.Publishing{
-					CorrelationId: req.ID(),
-					AppId:         req.Receiver(),
-					Type:          req.ReceiverEndpoint(),
-					Headers:       headers,
-				}
-
-				if err != nil {
-					amqpRes.ContentType = contentTypeError
-					amqpRes.Body = []byte(err.Error())
-				} else {
-					amqpRes.ContentType = contentTypeUsrvData
-					amqpRes.Body = payload
-				}
-
-				err = t.amqpChan.Publish(
-					"",              // default exchange
-					amqpReq.ReplyTo, // reply to client's private queue
-					true,            // mandatory
-					false,           // immediate
-					amqpRes,
-				)
-
-				if err == nil {
-					amqpReq.Ack(false)
-				} else {
-					amqpReq.Nack(false, false)
-				}
-
-				req.Close()
-				res.Close()
-				t.serverPendingRequests.Done()
-			}(&amqpReq, b)
-		case <-t.serverExitChan:
-			return
-		}
-	}
-}
-
-func (t *Transport) clientWorker(clientReadyChan chan struct{}) {
-	pendingClientRequests := make(map[string]*rpc, 0)
-
-	defer func() {
-		// Abort pending client requests with ErrServiceUnavailable
-		for _, rpc := range pendingClientRequests {
-			rpc.respondWithError(transport.ErrServiceUnavailable)
 		}
 	}()
 
-	// Signal dialClient that worker has started
-	close(clientReadyChan)
-	for {
-		select {
-		case rpc, ok := <-t.outgoingReqChan:
-			if !ok {
-				return
+	return serverStartedChan
+}
+
+func (t *Transport) clientWorker() chan struct{} {
+	clientStartedChan := make(chan struct{}, 0)
+
+	// Keep local copies of the channels we need. This prevents data-race
+	// warnings when running tests that involve redialing the transport
+	outgoingReqChan := t.outgoingReqChan
+	incomingResChan := t.incomingResChan
+	failedDispatchChan := t.failedDispatchChan
+	clientExitChan := t.clientExitChan
+
+	go func() {
+		pendingClientRequests := make(map[string]*rpc, 0)
+
+		defer func() {
+			// Abort pending client requests with ErrServiceUnavailable
+			for _, rpc := range pendingClientRequests {
+				rpc.respondWithError(transport.ErrServiceUnavailable)
 			}
-			payload, _ := rpc.req.Payload()
+		}()
 
-			// Map request to amqp payload
-			headers := amqpClient.Table{}
-			for k, v := range rpc.req.Headers() {
-				headers[k] = v
-			}
+		// Signal that worker has started
+		close(clientStartedChan)
 
-			pub := amqpClient.Publishing{
-				DeliveryMode:  amqpClient.Transient,
-				ContentType:   contentTypeUsrvData,
-				Headers:       headers,
-				Body:          payload,
-				ReplyTo:       t.amqpReplyQueueName,
-				CorrelationId: rpc.req.ID(),
-				// Encode from service/endpoint
-				AppId: rpc.req.Sender(),
-				Type:  rpc.req.SenderEndpoint(),
-			}
-			routingKey := routingKey(rpc.req.ReceiverVersion(), rpc.req.Receiver(), rpc.req.ReceiverEndpoint())
+		for {
+			select {
+			case rpc, ok := <-outgoingReqChan:
+				if !ok {
+					return
+				}
+				payload, _ := rpc.req.Payload()
 
-			err := t.amqpChan.Publish(
-				usrvExchangeName,
-				routingKey,
-				true,  // notify us for failed deliveries
-				false, // immediate
-				pub,
-			)
+				// Map request to amqp payload
+				headers := amqpClient.Table{}
+				for k, v := range rpc.req.Headers() {
+					headers[k] = v
+				}
 
-			// Error occurred; just report the error back
-			if err != nil {
+				pub := amqpClient.Publishing{
+					DeliveryMode:  amqpClient.Transient,
+					ContentType:   contentTypeUsrvData,
+					Headers:       headers,
+					Body:          payload,
+					ReplyTo:       t.amqpReplyQueueName,
+					CorrelationId: rpc.req.ID(),
+					// Encode from service/endpoint
+					AppId: rpc.req.Sender(),
+					Type:  rpc.req.SenderEndpoint(),
+				}
+				routingKey := routingKey(rpc.req.ReceiverVersion(), rpc.req.Receiver(), rpc.req.ReceiverEndpoint())
+
+				err := t.amqpChan.Publish(
+					usrvExchangeName,
+					routingKey,
+					true,  // notify us for failed deliveries
+					false, // immediate
+					pub,
+				)
+
+				// Error occurred; just report the error back
+				if err != nil {
+					rpc.respondWithError(err)
+					continue
+				}
+
+				// Add to pendingClientRequests and wait for an async reply
+				pendingClientRequests[pub.CorrelationId] = rpc
+			case amqpResponse, connectionOpen := <-incomingResChan:
+				if !connectionOpen {
+					return
+				}
+				rpc, exists := pendingClientRequests[amqpResponse.CorrelationId]
+				if !exists {
+					continue
+				}
+
+				delete(pendingClientRequests, amqpResponse.CorrelationId)
+
+				res := rpc.makeResponse()
+				decodeAmqpResponse(&amqpResponse, res)
+				rpc.respond(res)
+			case amqpReturn, connectionOpen := <-failedDispatchChan:
+				if !connectionOpen {
+					return
+				}
+
+				rpc, exists := pendingClientRequests[amqpReturn.CorrelationId]
+				if !exists {
+					continue
+				}
+
+				delete(pendingClientRequests, amqpReturn.CorrelationId)
+
+				var err error
+				switch amqpReturn.ReplyCode {
+				case replyCodeNotFound:
+					err = transport.ErrNotFound
+				case replyCodeNotAuthorized:
+					err = transport.ErrNotAuthorized
+				default:
+					err = transport.ErrServiceUnavailable
+				}
+
 				rpc.respondWithError(err)
-				continue
-			}
-
-			// Add to pendingClientRequests and wait for an async reply
-			pendingClientRequests[pub.CorrelationId] = rpc
-		case amqpResponse, connectionOpen := <-t.incomingResChan:
-			if !connectionOpen {
+			case <-clientExitChan:
 				return
 			}
-			rpc, exists := pendingClientRequests[amqpResponse.CorrelationId]
-			if !exists {
-				continue
-			}
-
-			delete(pendingClientRequests, amqpResponse.CorrelationId)
-
-			res := rpc.makeResponse()
-			decodeAmqpResponse(&amqpResponse, res)
-			rpc.respond(res)
-		case amqpReturn, connectionOpen := <-t.failedDispatchChan:
-			if !connectionOpen {
-				return
-			}
-
-			rpc, exists := pendingClientRequests[amqpReturn.CorrelationId]
-			if !exists {
-				continue
-			}
-
-			delete(pendingClientRequests, amqpReturn.CorrelationId)
-
-			var err error
-			switch amqpReturn.ReplyCode {
-			case replyCodeNotFound:
-				err = transport.ErrNotFound
-			case replyCodeNotAuthorized:
-				err = transport.ErrNotAuthorized
-			default:
-				err = transport.ErrServiceUnavailable
-			}
-
-			rpc.respondWithError(err)
-		case <-t.clientExitChan:
-			return
 		}
-	}
+	}()
+
+	return clientStartedChan
 }
 
 func decodeAmqpRequest(amqpReq *amqpClient.Delivery, b *binding) transport.Message {
