@@ -1,7 +1,9 @@
 language: go
-sudo: false
+sudo: required
 go:
   - 1.7.4
+services:
+  - rabbitmq
 before_install:
   - go get -t -v ./...
 script:
