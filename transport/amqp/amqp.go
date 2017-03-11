@@ -43,19 +43,20 @@ type amqpChannel interface {
 	Close() error
 }
 
-var dialAndGetChan = func(amqpURI string) (amqpChannel, io.Closer, error) {
+var dialAndGetChan = func(amqpURI string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
 	amqpConn, err := amqpClient.Dial(amqpURI)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	amqpChan, err := amqpConn.Channel()
 	if err != nil {
 		amqpConn.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return amqpChan, amqpConn, nil
+	connCloseChan := make(chan *amqpClient.Error, 0)
+	return amqpChan, amqpConn, amqpConn.NotifyClose(connCloseChan), nil
 }
 
 // rpc instances are used to send client requests. They are sent via a channel
@@ -132,8 +133,9 @@ type Transport struct {
 	// to this queue.
 	amqpRequestQueueName string
 
-	amqpConnCloser io.Closer
-	amqpChan       amqpChannel
+	amqpConnCloser    io.Closer
+	amqpChan          amqpChannel
+	amqpConnCloseChan chan *amqpClient.Error
 
 	// The dispatch worker monitors this channel for usrv outgoing requests (client mode).
 	outgoingReqChan chan *rpc
@@ -147,6 +149,7 @@ type Transport struct {
 	// This channel receives messages sent to amqpRequestQueueName (server mode).
 	incomingReqChan <-chan amqpClient.Delivery
 
+	connMonitorExitChan   chan struct{}
 	clientExitChan        chan struct{}
 	serverExitChan        chan struct{}
 	serverPendingRequests sync.WaitGroup
@@ -181,7 +184,7 @@ func (t *Transport) dialAndVerifyExchange() error {
 	}
 
 	var err error
-	t.amqpChan, t.amqpConnCloser, err = dialAndGetChan(t.amqpURI.Get())
+	t.amqpChan, t.amqpConnCloser, t.amqpConnCloseChan, err = dialAndGetChan(t.amqpURI.Get())
 	if err != nil {
 		return err
 	}
@@ -201,6 +204,23 @@ func (t *Transport) dialAndVerifyExchange() error {
 		t.amqpConnCloser.Close()
 		return err
 	}
+
+	t.connMonitorExitChan = make(chan struct{}, 0)
+	go func() {
+		for {
+			select {
+			case <-t.connMonitorExitChan:
+				return
+			case err := <-t.amqpConnCloseChan:
+				// The driver closes the channel when the connection closes
+				// so we only need to react to incoming errors
+				if err != nil {
+					t.redial()
+					return
+				}
+			}
+		}
+	}()
 
 	return nil
 }
@@ -328,6 +348,45 @@ func (t *Transport) dialServer() error {
 	return nil
 }
 
+func (t *Transport) redial() {
+	t.rwMutex.Lock()
+	defer t.rwMutex.Unlock()
+
+	// Reset amqp handles so we can redial
+	t.amqpChan = nil
+	t.amqpConnCloser = nil
+
+	// Keep track of current ref counters and then reset them; otherwise
+	// dialServer and dialClient will just increase them instead of re-dialing
+	curServerRefCount := t.serverRefCount
+	curClientRefCount := t.clientRefCount
+
+	t.serverRefCount = 0
+	t.clientRefCount = 0
+
+	if curServerRefCount > 0 {
+		if err := t.dialServer(); err != nil {
+			t.amqpChan = nil
+			t.amqpConnCloser = nil
+			close(t.connMonitorExitChan)
+			return
+		}
+
+		t.serverRefCount = curServerRefCount
+	}
+
+	if curClientRefCount > 0 {
+		if err := t.dialClient(); err != nil {
+			t.amqpChan = nil
+			t.amqpConnCloser = nil
+			close(t.connMonitorExitChan)
+			return
+		}
+
+		t.clientRefCount = curClientRefCount
+	}
+}
+
 // Close shuts down the transport.
 func (t *Transport) Close(mode transport.Mode) error {
 	defer func() {
@@ -336,6 +395,11 @@ func (t *Transport) Close(mode transport.Mode) error {
 		if t.serverRefCount+t.clientRefCount != 0 {
 			t.rwMutex.Unlock()
 			return
+		}
+
+		if t.connMonitorExitChan != nil {
+			close(t.connMonitorExitChan)
+			t.connMonitorExitChan = nil
 		}
 
 		if t.amqpChan != nil {
@@ -448,7 +512,6 @@ func (t *Transport) Unbind(version, service, endpoint string) {
 // Request performs an RPC and returns back a read-only channel for
 // receiving the result.
 func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMessage {
-
 	rpc := &rpc{
 		req:     msg,
 		resChan: make(chan transport.ImmutableMessage, 1),
@@ -548,7 +611,6 @@ func (t *Transport) clientWorker(clientReadyChan chan struct{}) {
 
 	// Signal dialClient that worker has started
 	close(clientReadyChan)
-
 	for {
 		select {
 		case rpc, ok := <-t.outgoingReqChan:
@@ -592,33 +654,34 @@ func (t *Transport) clientWorker(clientReadyChan chan struct{}) {
 
 			// Add to pendingClientRequests and wait for an async reply
 			pendingClientRequests[pub.CorrelationId] = rpc
-		case amqpRes, ok := <-t.incomingResChan:
-			if !ok {
+		case amqpResponse, connectionOpen := <-t.incomingResChan:
+			if !connectionOpen {
 				return
 			}
-			rpc, exists := pendingClientRequests[amqpRes.CorrelationId]
+			rpc, exists := pendingClientRequests[amqpResponse.CorrelationId]
 			if !exists {
 				continue
 			}
 
-			delete(pendingClientRequests, amqpRes.CorrelationId)
+			delete(pendingClientRequests, amqpResponse.CorrelationId)
 
 			res := rpc.makeResponse()
-			decodeAmqpResponse(&amqpRes, res)
+			decodeAmqpResponse(&amqpResponse, res)
 			rpc.respond(res)
-		case amqpRes, ok := <-t.failedDispatchChan:
-			if !ok {
+		case amqpReturn, connectionOpen := <-t.failedDispatchChan:
+			if !connectionOpen {
 				return
 			}
-			rpc, exists := pendingClientRequests[amqpRes.CorrelationId]
+
+			rpc, exists := pendingClientRequests[amqpReturn.CorrelationId]
 			if !exists {
 				continue
 			}
 
-			delete(pendingClientRequests, amqpRes.CorrelationId)
+			delete(pendingClientRequests, amqpReturn.CorrelationId)
 
 			var err error
-			switch amqpRes.ReplyCode {
+			switch amqpReturn.ReplyCode {
 			case replyCodeNotFound:
 				err = transport.ErrNotFound
 			case replyCodeNotAuthorized:

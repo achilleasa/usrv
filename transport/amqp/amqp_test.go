@@ -30,8 +30,8 @@ func TestDialServerErrors(t *testing.T) {
 	}()
 
 	expError := errors.New("amqp dial error")
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return nil, nil, expError
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return nil, nil, nil, expError
 	}
 
 	tr := New()
@@ -41,8 +41,8 @@ func TestDialServerErrors(t *testing.T) {
 	}
 
 	mc := &mockChannel{}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	mc.exDeclareErr = errors.New("amqp exchange declare error")
@@ -91,8 +91,8 @@ func TestDialClientErrors(t *testing.T) {
 	}()
 
 	expError := errors.New("amqp dial error")
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return nil, nil, expError
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return nil, nil, nil, expError
 	}
 
 	tr := New()
@@ -102,8 +102,8 @@ func TestDialClientErrors(t *testing.T) {
 	}
 
 	mc := &mockChannel{}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	mc.exDeclareErr = errors.New("amqp exchange declare error")
@@ -142,8 +142,8 @@ func TestServerDisconnectHandling(t *testing.T) {
 	mc := &mockChannel{
 		consumeChan: make(chan amqpClient.Delivery, 0),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -171,8 +171,8 @@ func TestBindAndUnbind(t *testing.T) {
 	}()
 
 	mc := &mockChannel{}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -213,8 +213,8 @@ func TestRequestForInvalidBinding(t *testing.T) {
 		consumeChan: make(chan amqpClient.Delivery, 0),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -263,8 +263,8 @@ func TestRequestForValidBinding(t *testing.T) {
 		consumeChan: make(chan amqpClient.Delivery, 0),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -368,8 +368,8 @@ func TestRequestForValidBindingWhenPublishFails(t *testing.T) {
 		consumeChan: make(chan amqpClient.Delivery, 0),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -426,6 +426,67 @@ func TestClientRequestWithClosedTransport(t *testing.T) {
 	}
 }
 
+func TestClientWorkerHandlingOfClosedAmqpChannels(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
+	mc := &mockChannel{
+		consumeChan: make(chan amqpClient.Delivery, 0),
+		returnChan:  make(chan amqpClient.Return, 0),
+		pubQueue:    make(chan amqpClient.Publishing, 2),
+	}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
+	}
+
+	tr := New()
+	if err := tr.Dial(transport.ModeClient); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	// queue rpc message and then close the response channel
+	rpcReq := &rpc{
+		req:     transport.MakeGenericMessage(),
+		resChan: make(chan transport.ImmutableMessage, 0),
+	}
+	tr.outgoingReqChan <- rpcReq
+
+	// close incoming request chan; this should cause the worker to exit and the request to fail
+	close(mc.consumeChan)
+	mc.consumeChan = nil
+
+	res := <-rpcReq.resChan
+	_, err := res.Payload()
+	if err != transport.ErrServiceUnavailable {
+		t.Fatal("expected rpc request to fail with ErrServiceUnavailable")
+	}
+
+	tr = New()
+	if err = tr.Dial(transport.ModeClient); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	// queue rpc message and then close the return channel
+	rpcReq = &rpc{
+		req:     transport.MakeGenericMessage(),
+		resChan: make(chan transport.ImmutableMessage, 0),
+	}
+	tr.outgoingReqChan <- rpcReq
+
+	// close return chan; this should cause the worker to exit and the request to fail
+	close(mc.returnChan)
+
+	res = <-rpcReq.resChan
+	_, err = res.Payload()
+	if err != transport.ErrServiceUnavailable {
+		t.Fatal("expected rpc request to fail with ErrServiceUnavailable")
+	}
+}
+
 func TestClientWorkerPublishRequest(t *testing.T) {
 	orig := dialAndGetChan
 	defer func() {
@@ -435,8 +496,8 @@ func TestClientWorkerPublishRequest(t *testing.T) {
 	mc := &mockChannel{
 		pubQueue: make(chan amqpClient.Publishing, 1),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -494,8 +555,8 @@ func TestClientWorkerWhenPublishFails(t *testing.T) {
 	mc := &mockChannel{
 		pubQueue: make(chan amqpClient.Publishing, 1),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -537,8 +598,8 @@ func TestClientWorkerWhenReceivingResponses(t *testing.T) {
 		consumeChan: make(chan amqpClient.Delivery, 0),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -622,8 +683,8 @@ func TestClientWorkerWhenReceivingResponsesWithBogusID(t *testing.T) {
 		consumeChan: make(chan amqpClient.Delivery, 0),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -672,8 +733,8 @@ func TestClientWorkerReturnHandling(t *testing.T) {
 	mc := &mockChannel{
 		pubQueue: make(chan amqpClient.Publishing, 1),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -738,8 +799,8 @@ func TestClientWorkerReturnHandlingWithBogusID(t *testing.T) {
 	mc := &mockChannel{
 		pubQueue: make(chan amqpClient.Publishing, 1),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	tr := New()
@@ -833,6 +894,109 @@ func TestAmqpResponseDecoder(t *testing.T) {
 	}
 }
 
+func TestRedialLogic(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
+	mc := &mockChannel{}
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
+	}
+
+	specs := []struct {
+		serverInstances int
+		clientInstances int
+		redialError     error
+	}{
+		{1, 0, nil},
+		{2, 1, nil},
+		{0, 1, nil},
+		{1, 0, errors.New("amqp consume error")},
+		{2, 1, errors.New("amqp consume error")},
+		{0, 1, errors.New("amqp consume error")},
+	}
+
+	for specIndex, spec := range specs {
+		tr := New()
+		mc.consumeErr = nil
+
+		for i := 0; i < spec.serverInstances; i++ {
+			if err := tr.Dial(transport.ModeServer); err != nil {
+				t.Errorf("[spec %d] %v", specIndex, err)
+				continue
+			}
+		}
+		for i := 0; i < spec.clientInstances; i++ {
+			if err := tr.Dial(transport.ModeClient); err != nil {
+				t.Errorf("[spec %d] %v", specIndex, err)
+				continue
+			}
+		}
+
+		tr.rwMutex.Lock()
+		if tr.serverRefCount != spec.serverInstances {
+			t.Errorf("[spec %d] expected server ref count to be %d; got %d", specIndex, spec.serverInstances, tr.serverRefCount)
+			tr.rwMutex.Unlock()
+			continue
+		}
+
+		if tr.clientRefCount != spec.clientInstances {
+			t.Fatalf("[spec %d] expected client ref count to be %d; got %d", specIndex, spec.clientInstances, tr.clientRefCount)
+			tr.rwMutex.Unlock()
+			continue
+		}
+		tr.rwMutex.Unlock()
+
+		// Setup next reconnection attempt error and force a redial
+		mc.consumeErr = spec.redialError
+		tr.redial()
+
+		tr.rwMutex.Lock()
+
+		switch {
+		case spec.redialError != nil:
+			if tr.serverRefCount != 0 {
+				t.Errorf("[spec %d] expected server ref count to be 0; got %d", specIndex, tr.serverRefCount)
+				tr.rwMutex.Unlock()
+				continue
+			}
+
+			if tr.clientRefCount != 0 {
+				t.Errorf("[spec %d] expected client ref count to be 0; got %d", specIndex, tr.clientRefCount)
+				tr.rwMutex.Unlock()
+				continue
+			}
+
+			if tr.amqpChan != nil {
+				t.Errorf("[spec %d] expected amqp channel reference to be nil", specIndex)
+			}
+
+			if tr.amqpConnCloser != nil {
+				t.Errorf("[spec %d] expected amqp conn closer reference to be nil", specIndex)
+			}
+		default:
+			if tr.serverRefCount != spec.serverInstances {
+				t.Errorf("[spec %d] expected server ref count to be %d; got %d", specIndex, spec.serverInstances, tr.serverRefCount)
+			}
+
+			if tr.clientRefCount != spec.clientInstances {
+				t.Fatalf("[spec %d] expected client ref count to be %d; got %d", specIndex, spec.clientInstances, tr.clientRefCount)
+			}
+
+			if tr.amqpChan == nil {
+				t.Errorf("[spec %d] expected amqp channel reference not to be nil", specIndex)
+			}
+
+			if tr.amqpConnCloser == nil {
+				t.Errorf("[spec %d] expected amqp conn closer reference not to be nil", specIndex)
+			}
+		}
+		tr.rwMutex.Unlock()
+	}
+}
+
 func TestRefCounting(t *testing.T) {
 	orig := dialAndGetChan
 	defer func() {
@@ -842,8 +1006,8 @@ func TestRefCounting(t *testing.T) {
 	mc := &mockChannel{
 		pubQueue: make(chan amqpClient.Publishing, 1),
 	}
-	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, error) {
-		return mc, mc, nil
+	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		return mc, mc, nil, nil
 	}
 
 	var err error
@@ -879,12 +1043,12 @@ func TestRefCounting(t *testing.T) {
 	}
 
 	if err = tr.Close(transport.ModeClient); err != transport.ErrTransportClosed {
-		t.Fatal("expected calling Close when client refCount set to 0 to return ErrTransportClosed; got %v", err)
+		t.Fatalf("expected calling Close when client refCount set to 0 to return ErrTransportClosed; got %v", err)
 	}
 
 	res := <-tr.Request(transport.MakeGenericMessage())
 	if _, err = res.Payload(); err != transport.ErrTransportClosed {
-		t.Fatal("expected calling Request when client refCount set to 0 to return ErrTransportClosed; got %v", err)
+		t.Fatalf("expected calling Request when client refCount set to 0 to return ErrTransportClosed; got %v", err)
 	}
 
 	if mc.CloseCount() != 0 {
@@ -904,7 +1068,7 @@ func TestRefCounting(t *testing.T) {
 
 	// Trying to close the server again should fail with ErrTransportClosed
 	if err = tr.Close(transport.ModeServer); err != transport.ErrTransportClosed {
-		t.Fatal("expected calling Close when server refCount set to 0 to return ErrTransportClosed; got %v", err)
+		t.Fatalf("expected calling Close when server refCount set to 0 to return ErrTransportClosed; got %v", err)
 	}
 }
 
@@ -1086,14 +1250,70 @@ func TestChannelErrorsUsingRealAmqp(t *testing.T) {
 
 	tr := New()
 	for specIndex, framePattern := range specs {
-		proxyListener := amqpProxy(t, amqpEnvFlag, framePattern)
-		defer proxyListener.Close()
+		proxy := newAmqpProxy(t, amqpEnvFlag, framePattern)
+		defer proxy.Close()
 
-		tr.amqpURI.Set(fmt.Sprintf("amqp://guest:guest@%s/", proxyListener.Addr().String()))
+		tr.amqpURI.Set(proxy.Endpoint())
 		err := tr.Dial(transport.ModeClient)
 		if err == nil {
 			t.Errorf("[spec %d] expected tr.Dial() to return an error", specIndex)
 		}
+	}
+}
+
+func TestClientRedialUsingRealAmqp(t *testing.T) {
+	amqpEnvFlag := os.Getenv("TRANSPORT_AMQP_URI")
+	if testing.Short() || amqpEnvFlag == "" {
+		t.Skip("skipping real AMQP instance integration test")
+	}
+
+	tr := New()
+	proxy := newAmqpProxy(t, amqpEnvFlag, nil)
+	defer proxy.Close()
+
+	tr.amqpURI.Set(proxy.Endpoint())
+	if err := tr.Dial(transport.ModeClient); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	<-time.After(100 * time.Millisecond)
+	proxy.srcConn.Close()
+	proxy.dstConn.Close()
+	<-time.After(100 * time.Millisecond)
+
+	// Transport should automatically re-dial
+	expConnCount := 2
+	if proxy.ConnectionCount() != expConnCount {
+		t.Fatalf("expected proxy to receive %d connection attempts; got %d", expConnCount, proxy.ConnectionCount())
+	}
+}
+
+func TestServerRedialUsingRealAmqp(t *testing.T) {
+	amqpEnvFlag := os.Getenv("TRANSPORT_AMQP_URI")
+	if testing.Short() || amqpEnvFlag == "" {
+		t.Skip("skipping real AMQP instance integration test")
+	}
+
+	tr := New()
+	proxy := newAmqpProxy(t, amqpEnvFlag, nil)
+	defer proxy.Close()
+
+	tr.amqpURI.Set(proxy.Endpoint())
+	if err := tr.Dial(transport.ModeServer); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeServer)
+
+	<-time.After(100 * time.Millisecond)
+	proxy.srcConn.Close()
+	proxy.dstConn.Close()
+	<-time.After(100 * time.Millisecond)
+
+	// Transport should automatically re-dial
+	expConnCount := 2
+	if proxy.ConnectionCount() != expConnCount {
+		t.Fatalf("expected proxy to receive %d connection attempts; got %d", expConnCount, proxy.ConnectionCount())
 	}
 }
 
@@ -1106,54 +1326,91 @@ func TestFactory(t *testing.T) {
 	}
 }
 
-func amqpProxy(t *testing.T, amqpHost string, matchPattern []byte) net.Listener {
+type amqpProxy struct {
+	connections int32
+	srcConn     net.Conn
+	dstConn     net.Conn
+
+	matchPattern []byte
+
+	proxyListener net.Listener
+}
+
+func (p *amqpProxy) connWorker(realAmqpHost string) {
+	var err error
+	for {
+		p.srcConn, err = p.proxyListener.Accept()
+		if err != nil {
+			return
+		}
+
+		p.dstConn, err = net.Dial("tcp4", realAmqpHost)
+		if err != nil {
+			p.srcConn.Close()
+			return
+		}
+
+		atomic.AddInt32(&p.connections, 1)
+
+		// Pipe srcConn data to dstConn
+		go io.Copy(p.dstConn, p.srcConn)
+
+		// Read amqp frames from dstConn and pipe them to srcConn
+		// until we encounter matchPattern in the frame data.
+		go func() {
+			bufReader := bufio.NewReader(p.dstConn)
+			for {
+				frame, err := bufReader.ReadBytes(amqpFrameTerminator)
+				if err != nil {
+					return
+				}
+
+				// If the data contains our match pattern close both connections.
+				if p.matchPattern != nil && bytes.Contains(frame, p.matchPattern) {
+					p.dstConn.Close()
+					p.srcConn.Close()
+					return
+				}
+
+				p.srcConn.Write(frame)
+			}
+		}()
+	}
+}
+
+func (p *amqpProxy) ConnectionCount() int {
+	return int(atomic.LoadInt32(&p.connections))
+}
+
+func (p *amqpProxy) Close() error {
+	if p.srcConn != nil {
+		p.srcConn.Close()
+	}
+	if p.dstConn != nil {
+		p.dstConn.Close()
+	}
+	return p.proxyListener.Close()
+}
+
+func (p *amqpProxy) Endpoint() string {
+	return fmt.Sprintf("amqp://guest:guest@%s/", p.proxyListener.Addr().String())
+}
+
+func newAmqpProxy(t *testing.T, amqpHost string, matchPattern []byte) *amqpProxy {
 	amqpHost = strings.Replace(strings.Split(amqpHost, "@")[1], "/", "", -1)
+
 	ln, err := net.Listen("tcp4", "localhost:")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	go func() {
-		for {
-			srcConn, err := ln.Accept()
-			if err != nil {
-				return
-			}
+	p := &amqpProxy{
+		matchPattern:  matchPattern,
+		proxyListener: ln,
+	}
 
-			dstConn, err := net.Dial("tcp4", amqpHost)
-			if err != nil {
-				srcConn.Close()
-				return
-			}
-
-			// Pipe srcConn data to dstConn
-			go io.Copy(dstConn, srcConn)
-
-			// Read amqp frames from dstConn and pipe them to srcConn
-			// until we encounter matchPattern in the frame data.
-			go func() {
-				bufReader := bufio.NewReader(dstConn)
-				for {
-					frame, err := bufReader.ReadBytes(amqpFrameTerminator)
-					if err != nil {
-						return
-					}
-
-					// If the data contains our match pattern close both connections.
-					if matchPattern != nil && bytes.Contains(frame, matchPattern) {
-						srcConn.Write([]byte{0xDE, 0xAD, 0xBE, 0xEF, amqpFrameTerminator})
-						//dstConn.Close()
-						//srcConn.Close()
-						//return
-					}
-
-					srcConn.Write(frame)
-				}
-			}()
-		}
-	}()
-
-	return ln
+	go p.connWorker(amqpHost)
+	return p
 }
 
 func makeAmqpDelivery(msg transport.ImmutableMessage, mc amqpChannel) amqpClient.Delivery {
