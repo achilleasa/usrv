@@ -30,6 +30,8 @@ var (
 	singleton transport.Provider = New()
 )
 
+// amqpChannel defines an interface that is compatible with amqpClient.Channel
+// and our channel mocks.
 type amqpChannel interface {
 	Ack(tag uint64, multiple bool) error
 	Nack(tag uint64, multiple bool, requeue bool) error
@@ -43,6 +45,11 @@ type amqpChannel interface {
 	Close() error
 }
 
+// dialAndGetChan is a helper function that given an amqpURI returns back an
+// amqpChannel interface, an io.Closer for shutting down the connection and a
+// channel for receiving connection error events.
+//
+// This function is overridden by tests to mock calls to the amqp serve.
 var dialAndGetChan = func(amqpURI string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
 	amqpConn, err := amqpClient.Dial(amqpURI)
 	if err != nil {
@@ -112,7 +119,48 @@ func routingKey(version, service, endpoint string) string {
 	return fmt.Sprintf("%s/%s/%s", version, service, endpoint)
 }
 
-// Transport implements a usrv transport using AMQP.
+// Transport implements a usrv transport using AMQP. The transport operates in
+// both a client and a server mode and utilizes reference counting to share a
+// single transport instance with multiple clients and servers. The transport
+// maintains and reuses an open connection until both reference counters reach zero.
+// It is therefore important that the application always closes the transport before
+// exiting to ensure that the AMQP logs do not fill up with "client unexpectedly
+// closed TCP connection" wanrings.
+//
+// In both modes, the transport declares a direct amqp exchange called usrv. All
+// usrv messages are routed through this particular exchange. The transport supoprts
+// endpoint versioning and generates AMQP routing keys with format "$version/$service/$endpoint".
+//
+// When operating in server mode, the transport allocates a private queue and for
+// each defined endpoint it binds its routing key to the private queue. This
+// allows the transport to use a single consumer channel for processing incoming
+// requests. For each incoming request, the transport uses the routing key to
+// figure out which handler it should invoke and spawns a go-routine to handle
+// the request.
+//
+// When operating in client mode, the transport allocates a private queue for
+// receiving responses. Whenever the client sends an outgoing request it populates
+// the following AMQP message fields:
+//  - AppId: set to the the outgoing message Sender() value.
+//  - Type: set to the outgoing message SenderEndpoint() value.
+//  - ReplyTo: set to the private queue name for receiving responses.
+//  - CorrelationId: set to the outgoing message ID() value.
+//
+// Since the transport handles responses asynchronously, the correlation ID serves
+// as a unique ID for matching pending requests to their responses.
+//
+// The client also listens for failed deliveries. This allows the transport to
+// fail pending requests if no servers are available or if the broker cannot
+// route the request.
+//
+// The transport receives its broker connection URL from a parameter with name:
+// "transport/amqp/uri". It's default value is set to "amqp://guest:guest@localhost:5672/"
+// which corresponds to a rabbitMQ instance running on localhost. At the moment,
+// TLS connections to the broker are not supported.
+//
+// As with other usrv transports, once connected, the AMQP transport monitors
+// the URI config for changes and automatically attempts to re-dial the connection
+// whenever its value changes.
 type Transport struct {
 	rwMutex sync.RWMutex
 
@@ -273,7 +321,7 @@ func (t *Transport) dialClient() error {
 	// Start the client worker and wait for it to ack that its up & running
 	t.outgoingReqChan = make(chan *rpc, 0)
 	t.clientExitChan = make(chan struct{}, 0)
-	<-t.clientWorker()
+	<-t.spawnClientWorker()
 
 	t.clientRefCount++
 	return nil
@@ -338,12 +386,18 @@ func (t *Transport) dialServer() error {
 
 	// Start the server worker and wait for it to ack that its up & running
 	t.serverExitChan = make(chan struct{}, 1)
-	<-t.serverWorker()
+	<-t.spawnServerWorker()
 
 	t.serverRefCount++
 	return nil
 }
 
+// redial is invoked whenever the amqp connection notifies us that an error
+// (usually EOF) has occurred. This function will attempt to re-establish a
+// connection and dial the client- and/or server-side of the transport. If the
+// redial attempt fails, both the server and the client reference counters are
+// reset. This ensures that future calls to Request() will fail until the
+// connection can be re-established.
 func (t *Transport) redial() {
 	t.rwMutex.Lock()
 	defer t.rwMutex.Unlock()
@@ -526,7 +580,14 @@ func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMes
 	return rpc.resChan
 }
 
-func (t *Transport) serverWorker() chan struct{} {
+// spawnServerWorker starts a go-routine that processes incoming usrv requests.
+// The worker spawns a go-routine for each incoming request and acks/nacks the
+// request depending on whether an error occurred.
+//
+// The worker listens on serverExitChan and shuts down if it receives a message
+// or the channel closes. This function returns a channel which is closed when
+// the worker go-routine has started.
+func (t *Transport) spawnServerWorker() chan struct{} {
 	serverStartedChan := make(chan struct{}, 0)
 
 	// Keep local copies of the channels we need. This prevents data-race
@@ -608,7 +669,17 @@ func (t *Transport) serverWorker() chan struct{} {
 	return serverStartedChan
 }
 
-func (t *Transport) clientWorker() chan struct{} {
+// spawnClientWorker starts a go-routine that publishes outgoing usrv requests
+// and pairs incoming responses to the outgoing requests by matching their
+// correlation IDs. The worker also listens for undelivered outgoing requests
+// and automatically aborts their pending responses.
+//
+// The worker listens on clientExitChan and shuts down if it receives a message
+// or the channel closes. Before exiting, the worker ensures that any pending
+// requests fail with ErrServiceUnavailable.
+//
+// This function returns a channel which is closed when the worker go-routine has started.
+func (t *Transport) spawnClientWorker() chan struct{} {
 	clientStartedChan := make(chan struct{}, 0)
 
 	// Keep local copies of the channels we need. This prevents data-race
