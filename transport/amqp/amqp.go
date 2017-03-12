@@ -168,7 +168,7 @@ type Transport struct {
 	serverRefCount int
 	clientRefCount int
 
-	// A flag for providing the broken location.
+	// A flag for the AMQP broker endpoint.
 	amqpURI *flag.String
 
 	// A private queue where the transport receives responses for outgoing
@@ -196,7 +196,7 @@ type Transport struct {
 	// This channel receives messages sent to amqpRequestQueueName (server mode).
 	incomingReqChan <-chan amqpClient.Delivery
 
-	connMonitorExitChan   chan struct{}
+	monitorExitChan       chan struct{}
 	clientExitChan        chan struct{}
 	serverExitChan        chan struct{}
 	serverPendingRequests sync.WaitGroup
@@ -225,11 +225,6 @@ func (t *Transport) Dial(mode transport.Mode) error {
 }
 
 func (t *Transport) dialAndVerifyExchange() error {
-	// Channel is already opened
-	if t.amqpChan != nil {
-		return nil
-	}
-
 	var err error
 	var amqpConnCloseChan chan *amqpClient.Error
 	t.amqpChan, t.amqpConnCloser, amqpConnCloseChan, err = dialAndGetChan(t.amqpURI.Get())
@@ -253,22 +248,45 @@ func (t *Transport) dialAndVerifyExchange() error {
 		return err
 	}
 
-	t.connMonitorExitChan = make(chan struct{}, 0)
+	t.monitorExitChan = make(chan struct{}, 0)
 	go func(monitorExitChan chan struct{}) {
+		var err error
 		for {
 			select {
 			case <-monitorExitChan:
 				return
-			case err := <-amqpConnCloseChan:
-				// The driver closes the channel when the connection closes
-				// so we only need to react to incoming errors
+			case err = <-amqpConnCloseChan:
+				// The amqp driver reports an EOF error and then closes
+				// the channel. We only care about errors. Try redialing.
+				// If the attempt fails, leave the monitor running so we
+				// can trigger redial if the amqp endpoint changes.
 				if err != nil {
-					t.redial()
-					return
+					t.rwMutex.Lock()
+					t.amqpChan = nil
+					t.amqpConnCloser = nil
+					t.rwMutex.Unlock()
+
+					if err = t.redial(); err != nil {
+						return
+					}
 				}
+			case <-t.amqpURI.ChangeChan():
+				// redial() will force-close the connection; make sure that
+				// the monitor does not process any events sent to the connection
+				// close channel
+				amqpConnCloseChan = nil
+
+				// Trigger redial. If the redial succeeds, a new
+				// monitor go-routine will be spawned so we need to exit
+				// this one.
+				if err = t.redial(); err != nil {
+					continue
+				}
+
+				return
 			}
 		}
-	}(t.connMonitorExitChan)
+	}(t.monitorExitChan)
 
 	return nil
 }
@@ -276,14 +294,16 @@ func (t *Transport) dialAndVerifyExchange() error {
 // dialClient dials the transport and sets up a private queue for receiving
 // responses for outgoing requests. This method must be called while holding the mutex.
 func (t *Transport) dialClient() error {
+	if t.amqpChan == nil {
+		err := t.dialAndVerifyExchange()
+		if err != nil {
+			return err
+		}
+	}
+
 	if t.clientRefCount > 0 {
 		t.clientRefCount++
 		return nil
-	}
-
-	err := t.dialAndVerifyExchange()
-	if err != nil {
-		return err
 	}
 
 	// Allocate a private queue for receiving responses
@@ -330,14 +350,16 @@ func (t *Transport) dialClient() error {
 // dialServer dials the transport and sets up a private queue for receiving
 // incoming requests. This method must be called while holding the mutex.
 func (t *Transport) dialServer() error {
+	if t.amqpChan == nil {
+		err := t.dialAndVerifyExchange()
+		if err != nil {
+			return err
+		}
+	}
+
 	if t.serverRefCount > 0 {
 		t.serverRefCount++
 		return nil
-	}
-
-	err := t.dialAndVerifyExchange()
-	if err != nil {
-		return err
 	}
 
 	// Allocate a private queue for receiving requests to the bound endpoints
@@ -393,23 +415,30 @@ func (t *Transport) dialServer() error {
 }
 
 // redial is invoked whenever the amqp connection notifies us that an error
-// (usually EOF) has occurred. This function will attempt to re-establish a
-// connection and dial the client- and/or server-side of the transport. If the
-// redial attempt fails, both the server and the client reference counters are
-// reset. This ensures that future calls to Request() will fail until the
-// connection can be re-established.
-func (t *Transport) redial() {
+// (usually EOF) has occured. This function will attempt to re-establish a
+// connection and dial the client- and/or server-side of the transport.
+func (t *Transport) redial() error {
 	t.rwMutex.Lock()
 	defer t.rwMutex.Unlock()
 
 	// Reset amqp handles so we can redial
-	t.amqpChan = nil
-	t.amqpConnCloser = nil
+	if t.amqpChan != nil {
+		t.amqpChan.Close()
+		t.amqpChan = nil
+	}
+	if t.amqpConnCloser != nil {
+		t.amqpConnCloser.Close()
+		t.amqpConnCloser = nil
+	}
 
 	// Keep track of current ref counters and then reset them; otherwise
 	// dialServer and dialClient will just increase them instead of re-dialing
 	curServerRefCount := t.serverRefCount
 	curClientRefCount := t.clientRefCount
+	defer func() {
+		t.serverRefCount = curServerRefCount
+		t.clientRefCount = curClientRefCount
+	}()
 
 	t.serverRefCount = 0
 	t.clientRefCount = 0
@@ -418,25 +447,23 @@ func (t *Transport) redial() {
 		if err := t.dialServer(); err != nil {
 			t.amqpChan = nil
 			t.amqpConnCloser = nil
-			close(t.connMonitorExitChan)
-			t.connMonitorExitChan = nil
-			return
+			close(t.monitorExitChan)
+			t.monitorExitChan = nil
+			return err
 		}
-
-		t.serverRefCount = curServerRefCount
 	}
 
 	if curClientRefCount > 0 {
 		if err := t.dialClient(); err != nil {
 			t.amqpChan = nil
 			t.amqpConnCloser = nil
-			close(t.connMonitorExitChan)
-			t.connMonitorExitChan = nil
-			return
+			close(t.monitorExitChan)
+			t.monitorExitChan = nil
+			return err
 		}
-
-		t.clientRefCount = curClientRefCount
 	}
+
+	return nil
 }
 
 // Close shuts down the transport.
@@ -449,9 +476,9 @@ func (t *Transport) Close(mode transport.Mode) error {
 			return
 		}
 
-		if t.connMonitorExitChan != nil {
-			close(t.connMonitorExitChan)
-			t.connMonitorExitChan = nil
+		if t.monitorExitChan != nil {
+			close(t.monitorExitChan)
+			t.monitorExitChan = nil
 		}
 
 		if t.amqpChan != nil {
@@ -570,7 +597,7 @@ func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMes
 	}
 
 	t.rwMutex.RLock()
-	if t.clientRefCount == 0 {
+	if t.clientRefCount == 0 || t.amqpChan == nil {
 		rpc.respondWithError(transport.ErrTransportClosed)
 	} else {
 		t.outgoingReqChan <- rpc

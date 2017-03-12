@@ -957,18 +957,6 @@ func TestRedialLogic(t *testing.T) {
 
 		switch {
 		case spec.redialError != nil:
-			if tr.serverRefCount != 0 {
-				t.Errorf("[spec %d] expected server ref count to be 0; got %d", specIndex, tr.serverRefCount)
-				tr.rwMutex.Unlock()
-				continue
-			}
-
-			if tr.clientRefCount != 0 {
-				t.Errorf("[spec %d] expected client ref count to be 0; got %d", specIndex, tr.clientRefCount)
-				tr.rwMutex.Unlock()
-				continue
-			}
-
 			if tr.amqpChan != nil {
 				t.Errorf("[spec %d] expected amqp channel reference to be nil", specIndex)
 			}
@@ -977,14 +965,6 @@ func TestRedialLogic(t *testing.T) {
 				t.Errorf("[spec %d] expected amqp conn closer reference to be nil", specIndex)
 			}
 		default:
-			if tr.serverRefCount != spec.serverInstances {
-				t.Errorf("[spec %d] expected server ref count to be %d; got %d", specIndex, spec.serverInstances, tr.serverRefCount)
-			}
-
-			if tr.clientRefCount != spec.clientInstances {
-				t.Fatalf("[spec %d] expected client ref count to be %d; got %d", specIndex, spec.clientInstances, tr.clientRefCount)
-			}
-
 			if tr.amqpChan == nil {
 				t.Errorf("[spec %d] expected amqp channel reference not to be nil", specIndex)
 			}
@@ -994,6 +974,57 @@ func TestRedialLogic(t *testing.T) {
 			}
 		}
 		tr.rwMutex.Unlock()
+	}
+}
+
+func TestRedialOnDynamicCfgChange(t *testing.T) {
+	orig := dialAndGetChan
+	defer func() {
+		dialAndGetChan = orig
+	}()
+
+	mc := &mockChannel{}
+	var dialCount int32
+	dialAndGetChan = func(e string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
+		atomic.AddInt32(&dialCount, 1)
+		return mc, mc, nil, nil
+	}
+
+	tr := New()
+	tr.amqpURI.Set("foo")
+	if err := tr.Dial(transport.ModeServer); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeServer)
+
+	// Trigger re-dial via a cfg change; the redial will fail but the monitor
+	// must still remain active
+	<-time.After(100 * time.Millisecond)
+	mc.lock.Lock()
+	mc.consumeErr = errors.New("amqp consume error")
+	mc.lock.Unlock()
+	tr.amqpURI.Set("bar")
+	<-time.After(100 * time.Millisecond)
+
+	// Trigger re-dial via a cfg change; this time it should work
+	<-time.After(100 * time.Millisecond)
+	mc.lock.Lock()
+	mc.consumeErr = nil
+	mc.lock.Unlock()
+	tr.amqpURI.Set("bar2")
+	<-time.After(100 * time.Millisecond)
+
+	expDialCount := 3
+	if int(atomic.LoadInt32(&dialCount)) != expDialCount {
+		t.Fatalf("expected dial count to be %d; got %d", expDialCount, atomic.LoadInt32(&dialCount))
+	}
+
+	tr.rwMutex.Lock()
+	connected := tr.amqpChan != nil
+	tr.rwMutex.Unlock()
+
+	if !connected {
+		t.Fatal("expected transport to be connected")
 	}
 }
 
@@ -1288,6 +1319,33 @@ func TestClientRedialUsingRealAmqp(t *testing.T) {
 	}
 }
 
+func TestCfgChangeRedialUsingRealAmqp(t *testing.T) {
+	amqpEnvFlag := os.Getenv("TRANSPORT_AMQP_URI")
+	if testing.Short() || amqpEnvFlag == "" {
+		t.Skip("skipping real AMQP instance integration test")
+	}
+
+	tr := New()
+	proxy := newAmqpProxy(t, amqpEnvFlag, nil)
+	defer proxy.Close()
+
+	tr.amqpURI.Set(amqpEnvFlag)
+	if err := tr.Dial(transport.ModeClient); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(transport.ModeClient)
+
+	<-time.After(100 * time.Millisecond)
+	tr.amqpURI.Set(proxy.Endpoint())
+	<-time.After(100 * time.Millisecond)
+
+	// Transport should automatically re-dial
+	expConnCount := 1
+	if proxy.ConnectionCount() != expConnCount {
+		t.Fatalf("expected proxy to receive %d connection attempts; got %d", expConnCount, proxy.ConnectionCount())
+	}
+}
+
 func TestServerRedialUsingRealAmqp(t *testing.T) {
 	amqpEnvFlag := os.Getenv("TRANSPORT_AMQP_URI")
 	if testing.Short() || amqpEnvFlag == "" {
@@ -1436,6 +1494,8 @@ func makeAmqpDelivery(msg transport.ImmutableMessage, mc amqpChannel) amqpClient
 }
 
 type mockChannel struct {
+	lock sync.Mutex
+
 	ackErr          error
 	nackErr         error
 	rejectErr       error
@@ -1456,6 +1516,9 @@ type mockChannel struct {
 }
 
 func (mc *mockChannel) Reject(tag uint64, requeue bool) error {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
 	if mc.rejectErr != nil {
 		return mc.rejectErr
 	}
@@ -1469,6 +1532,9 @@ func (mc *mockChannel) RejectCount() int {
 }
 
 func (mc *mockChannel) Ack(tag uint64, multiple bool) error {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
 	if mc.ackErr != nil {
 		return mc.ackErr
 	}
@@ -1482,6 +1548,9 @@ func (mc *mockChannel) AckCount() int {
 }
 
 func (mc *mockChannel) Nack(tag uint64, multiple bool, requeue bool) error {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
 	if mc.nackErr != nil {
 		return mc.nackErr
 	}
@@ -1500,6 +1569,9 @@ func (mc *mockChannel) NotifyReturn(c chan amqpClient.Return) chan amqpClient.Re
 }
 
 func (mc *mockChannel) Publish(exchange, key string, mandatory, immediate bool, msg amqpClient.Publishing) error {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
 	if mc.pubErr != nil {
 		return mc.pubErr
 	}
@@ -1512,24 +1584,39 @@ func (mc *mockChannel) Publish(exchange, key string, mandatory, immediate bool, 
 }
 
 func (mc *mockChannel) ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqpClient.Table) error {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
 	return mc.exDeclareErr
 }
 
 func (mc *mockChannel) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqpClient.Table) (amqpClient.Queue, error) {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
 	return amqpClient.Queue{
 		Name: "test-queue",
 	}, mc.queueDeclareErr
 }
 
 func (mc *mockChannel) QueueBind(name, key, exchange string, noWait bool, args amqpClient.Table) error {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
 	return mc.queueBindErr
 }
 
 func (mc *mockChannel) Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqpClient.Table) (<-chan amqpClient.Delivery, error) {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
 	return mc.consumeChan, mc.consumeErr
 }
 
 func (mc *mockChannel) Close() error {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
 	if mc.closeErr != nil {
 		return mc.closeErr
 	}
