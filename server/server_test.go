@@ -396,8 +396,7 @@ func TestServer(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		err := srv.Listen()
-		if err != nil {
+		if err = srv.Listen(); err != nil {
 			t.Fatal(err)
 		}
 	}()

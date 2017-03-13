@@ -16,7 +16,6 @@ import (
 const (
 	replyCodeNotAuthorized uint16 = 403
 	replyCodeNotFound             = 404
-	replyCodeNoConsumers          = 313
 
 	contentTypeUsrvData = "application/usrv+data"
 	contentTypeError    = "application/usrv+error"

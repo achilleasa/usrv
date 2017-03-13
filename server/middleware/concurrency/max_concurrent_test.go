@@ -73,7 +73,8 @@ func TestSingletonFactory(t *testing.T) {
 			MiddlewareFactories: append([]server.MiddlewareFactory{
 				func(next server.Middleware) server.Middleware {
 					return server.MiddlewareFunc(func(ctx context.Context, req transport.ImmutableMessage, res transport.Message) {
-						ctx, _ = context.WithTimeout(ctx, 50*time.Millisecond)
+						ctx, cancelFn := context.WithTimeout(ctx, 50*time.Millisecond)
+						defer cancelFn()
 						next.Handle(ctx, req, res)
 					})
 				},

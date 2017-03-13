@@ -324,8 +324,7 @@ func (s *Store) Watch(path string, changeHandler ChangeHandlerFunc) UnsubscribeF
 	// apply it to the store; then register a watch for the same path. Provider
 	// values are applied in high to low priority order. This ensures the
 	// minimum number of nodes flagged as modified.
-	treeModified := false
-	modFlag := false
+	var treeModified, modFlag bool
 	var pathRoot *node
 	if numProviders > 0 {
 		for index := len(s.providers) - 1; index >= 0; index-- {

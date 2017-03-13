@@ -66,7 +66,7 @@ func TestInMemoryErrors(t *testing.T) {
 	// Send to unknown endpoint
 	resChan := tr.Request(newMessage("test/case", "unknown/endpoint"))
 	res := <-resChan
-	if _, err := res.Payload(); err != transport.ErrNotFound {
+	if _, err = res.Payload(); err != transport.ErrNotFound {
 		t.Fatalf("expected err %v; got %v", transport.ErrNotFound, err)
 	}
 

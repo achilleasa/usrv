@@ -750,7 +750,6 @@ func TestClientWorkerReturnHandling(t *testing.T) {
 	}{
 		{replyCodeNotFound, transport.ErrNotFound},
 		{replyCodeNotAuthorized, transport.ErrNotAuthorized},
-		{replyCodeNoConsumers, transport.ErrServiceUnavailable},
 		{500, transport.ErrServiceUnavailable},
 	}
 

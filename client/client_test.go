@@ -84,7 +84,8 @@ func TestClientRequest(t *testing.T) {
 	}
 
 	// Client-side timeout
-	ctx, _ := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	ctx, cancelFn := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancelFn()
 	err = c.Request(ctx, "endpoint", reqObj, resObj)
 	if err != transport.ErrTimeout {
 		t.Fatalf("expected to get error %v; got %v", transport.ErrTimeout, err)
@@ -271,7 +272,8 @@ func TestClientMiddlewareChain(t *testing.T) {
 	}
 
 	// Client-side timeout; middleware should still be executed
-	ctx, _ = context.WithTimeout(ctx, 1*time.Millisecond)
+	ctx, cancelFn := context.WithTimeout(ctx, 1*time.Millisecond)
+	defer cancelFn()
 	err = c.Request(ctx, expEndpoint, reqObj, resObj)
 	if err != transport.ErrTimeout {
 		t.Fatalf("expected to get error %v; got %v", transport.ErrTimeout, err)
@@ -374,9 +376,9 @@ func TestClientErrors(t *testing.T) {
 	var invocation int32
 	tr.Bind("", "service", "endpoint", transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
-			invocation := atomic.AddInt32(&invocation, 1)
+			atomic.AddInt32(&invocation, 1)
 			// first two invocations succeed
-			if invocation <= 2 {
+			if atomic.LoadInt32(&invocation) <= 2 {
 				<-time.After(100 * time.Millisecond)
 			} else {
 				res.SetPayload(nil, errors.New("server-side error"))
@@ -410,13 +412,14 @@ func TestClientErrors(t *testing.T) {
 	expError := "marshal error"
 	err = c.Request(context.Background(), "endpoint", &reqObj, &resObj)
 	if err == nil || err.Error() != expError {
-		t.Fatal("expected error %q; got %v", expError, err)
+		t.Fatalf("expected error %q; got %v", expError, err)
 	}
 
 	c.marshaler = json.Marshal
 
 	// Client-side timeout
-	ctx, _ := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	ctx, cancelFn := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancelFn()
 	err = c.Request(ctx, "endpoint", &reqObj, &resObj)
 	if err != transport.ErrTimeout {
 		t.Fatalf("expected to get error %v; got %v", transport.ErrTimeout, err)
@@ -426,7 +429,7 @@ func TestClientErrors(t *testing.T) {
 	expError = "unmarshal error"
 	err = c.Request(context.Background(), "endpoint", &reqObj, &resObj)
 	if err == nil || err.Error() != expError {
-		t.Fatal("expected error %q; got %v", expError, err)
+		t.Fatalf("expected error %q; got %v", expError, err)
 	}
 
 	// Server-side error
@@ -434,7 +437,7 @@ func TestClientErrors(t *testing.T) {
 	expError = "server-side error"
 	err = c.Request(context.Background(), "endpoint", &reqObj, &resObj)
 	if err == nil || err.Error() != expError {
-		t.Fatal("expected error %q; got %v", expError, err)
+		t.Fatalf("expected error %q; got %v", expError, err)
 	}
 }
 
