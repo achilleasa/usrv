@@ -36,7 +36,7 @@ func (c *protobufCodec) Unmarshaler() encoding.Unmarshaler {
 	}
 }
 
-// Codec retuns a codec that implements encoding and decoding of protocol buffers.
+// Codec returns a codec that implements encoding and decoding of protocol buffers.
 func Codec() encoding.Codec {
 	return &protobufCodec{}
 }

@@ -29,7 +29,7 @@ type flagImpl struct {
 	// A channel for receiving notifications when the flag value changes.
 	changedChan chan struct{}
 
-	// A function for cancelling the watcher for this value.
+	// A function for canceling the watcher for this value.
 	unsubscribeFn store.UnsubscribeFunc
 
 	// A function for mapping incoming config events to a value that can be set.

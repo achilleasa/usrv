@@ -440,7 +440,7 @@ func TestRPCOverHTTP(t *testing.T) {
 			t.Errorf("header mismatch; expected %v; got %v", expHeaders, headers)
 		}
 
-		// Populate respone
+		// Populate response
 		res.SetPayload([]byte("hello back!"), nil)
 
 		// Add extra user header

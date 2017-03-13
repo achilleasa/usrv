@@ -415,7 +415,7 @@ func (t *Transport) dialServer() error {
 }
 
 // redial is invoked whenever the amqp connection notifies us that an error
-// (usually EOF) has occured. This function will attempt to re-establish a
+// (usually EOF) has occurred. This function will attempt to re-establish a
 // connection and dial the client- and/or server-side of the transport.
 func (t *Transport) redial() error {
 	t.rwMutex.Lock()

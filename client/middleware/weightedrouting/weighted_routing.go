@@ -64,7 +64,7 @@ type router struct {
 	// A RW mutex used for synchronizing access to the routing table.
 	mutex sync.RWMutex
 
-	// The list of versioned routes and their selection probabilites.
+	// The list of versioned routes and their selection probabilities.
 	routes []route
 
 	// A flag providing the weight configurations.

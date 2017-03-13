@@ -212,7 +212,7 @@ type Transport struct {
 	client    requestMaker
 	clientErr error
 
-	// URLBuilder can be overriden to implement custom service discovery rules.
+	// URLBuilder can be overridden to implement custom service discovery rules.
 	URLBuilder ServiceURLBuilder
 }
 
@@ -377,7 +377,7 @@ func (t *Transport) Request(reqMsg transport.Message) <-chan transport.Immutable
 		}
 
 		// Always append internal headers after any user-defined headers
-		// so that they cannot be accidentally overriden
+		// so that they cannot be accidentally overridden
 		httpReq.Header.Set(headerPrefix+requestIDHeader, reqMsg.ID())
 		httpReq.Header.Set(headerPrefix+senderHeader, reqMsg.Sender())
 		httpReq.Header.Set(headerPrefix+senderEndpointHeader, reqMsg.SenderEndpoint())

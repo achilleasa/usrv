@@ -14,10 +14,10 @@ import (
 //
 // The client uses a codec instance to marshal and unmarshal the request and
 // response objects accepted by the endpoint handlers into the low-level message
-// format used by the attached transport. Unless overriden by the WithCodec config
+// format used by the attached transport. Unless overridden by the WithCodec config
 // option, the client will invoke usrv.DefaultCodecFactory to fetch a codec instance.
 //
-// Unless overriden with the WithTransport config option, the client will invoke
+// Unless overridden with the WithTransport config option, the client will invoke
 // usrv.DefaultTransportFactory to fetch a transport instance.
 type Client struct {
 	// The transport used by the client.

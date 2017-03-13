@@ -164,7 +164,7 @@ func TestInMemoryRPC(t *testing.T) {
 			t.Errorf("header mismatch; expected %v; got %v", expHeaders, headers)
 		}
 
-		// Populate respone
+		// Populate response
 		res.SetPayload([]byte("hello back!"), nil)
 	}
 
@@ -218,7 +218,7 @@ func TestInMemoryRPC(t *testing.T) {
 		t.Errorf("expected payload to be %q; got %q", expValues[0], string(payload))
 	}
 
-	// Try a request with a specific service verison request
+	// Try a request with a specific service version request
 	req.SetReceiverVersion("v0")
 	resChan = tr.Request(req)
 	res = <-resChan

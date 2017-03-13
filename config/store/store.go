@@ -225,7 +225,7 @@ func (s *Store) Get(path string) (map[string]string, int) {
 // all of its children will be deleted and the node will be converted into a leaf.
 //
 // SetKey returns a boolean flag to indicate whether the store was updated. If
-// a version mismatch occured then SetKey will return false to indicate that no.
+// a version mismatch occurred then SetKey will return false to indicate that no.
 // update took place.
 func (s *Store) SetKey(version int, path, value string) (storeUpdated bool, err error) {
 	return s.setAndNotify(version, path, value), nil

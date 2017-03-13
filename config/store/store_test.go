@@ -365,7 +365,7 @@ func TestWatchersUnsubscribe(t *testing.T) {
 	// Calling unwatch on an unknown path while at least one watcher is defined should be ok
 	s.unwatch("/a/path", 1)()
 
-	// Unsubscribe should prevent further changes from beeing sent to the channel
+	// Unsubscribe should prevent further changes from being sent to the channel
 	unsubFn()
 
 	// Ensure that the watcher has been removed
