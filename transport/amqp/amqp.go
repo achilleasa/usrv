@@ -62,7 +62,7 @@ var dialAndGetChan = func(amqpURI string) (amqpChannel, io.Closer, chan *amqpCli
 		return nil, nil, nil, err
 	}
 
-	connCloseChan := make(chan *amqpClient.Error, 0)
+	connCloseChan := make(chan *amqpClient.Error)
 	return amqpChan, amqpConn, amqpConn.NotifyClose(connCloseChan), nil
 }
 
@@ -207,7 +207,7 @@ type Transport struct {
 // New creates a new amqp transport instance.
 func New() *Transport {
 	return &Transport{
-		bindings: make(map[string]*binding, 0),
+		bindings: make(map[string]*binding),
 		amqpURI:  config.StringFlag("transport/amqp/uri"),
 	}
 }
@@ -248,7 +248,7 @@ func (t *Transport) dialAndVerifyExchange() error {
 		return err
 	}
 
-	t.monitorExitChan = make(chan struct{}, 0)
+	t.monitorExitChan = make(chan struct{})
 	go func(monitorExitChan chan struct{}) {
 		var err error
 		for {
@@ -336,11 +336,11 @@ func (t *Transport) dialClient() error {
 	t.amqpReplyQueueName = resQueue.Name
 
 	// Request to be notified about returned deliveries
-	t.failedDispatchChan = t.amqpChan.NotifyReturn(make(chan amqpClient.Return, 0))
+	t.failedDispatchChan = t.amqpChan.NotifyReturn(make(chan amqpClient.Return))
 
 	// Start the client worker and wait for it to ack that its up & running
-	t.outgoingReqChan = make(chan *rpc, 0)
-	t.clientExitChan = make(chan struct{}, 0)
+	t.outgoingReqChan = make(chan *rpc)
+	t.clientExitChan = make(chan struct{})
 	<-t.spawnClientWorker()
 
 	t.clientRefCount++
@@ -615,7 +615,7 @@ func (t *Transport) Request(msg transport.Message) <-chan transport.ImmutableMes
 // or the channel closes. This function returns a channel which is closed when
 // the worker go-routine has started.
 func (t *Transport) spawnServerWorker() chan struct{} {
-	serverStartedChan := make(chan struct{}, 0)
+	serverStartedChan := make(chan struct{})
 
 	// Keep local copies of the channels we need. This prevents data-race
 	// warnings when running tests that involve redialing the transport
@@ -707,7 +707,7 @@ func (t *Transport) spawnServerWorker() chan struct{} {
 //
 // This function returns a channel which is closed when the worker go-routine has started.
 func (t *Transport) spawnClientWorker() chan struct{} {
-	clientStartedChan := make(chan struct{}, 0)
+	clientStartedChan := make(chan struct{})
 
 	// Keep local copies of the channels we need. This prevents data-race
 	// warnings when running tests that involve redialing the transport
@@ -717,7 +717,7 @@ func (t *Transport) spawnClientWorker() chan struct{} {
 	clientExitChan := t.clientExitChan
 
 	go func() {
-		pendingClientRequests := make(map[string]*rpc, 0)
+		pendingClientRequests := make(map[string]*rpc)
 
 		defer func() {
 			// Abort pending client requests with ErrServiceUnavailable

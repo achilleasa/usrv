@@ -143,7 +143,7 @@ func (s *Server) Listen() error {
 		return err
 	}
 
-	s.doneChan = make(chan struct{}, 0)
+	s.doneChan = make(chan struct{})
 	s.mutex.Unlock()
 
 	// Wait for a stop signal

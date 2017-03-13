@@ -209,7 +209,7 @@ func (s *Store) Get(path string) (map[string]string, int) {
 
 	root := s.lookup(path, false)
 	if root == nil {
-		return make(map[string]string, 0), -1
+		return make(map[string]string), -1
 	}
 
 	return root.leafValues("", true), root.version
@@ -269,7 +269,7 @@ func (s *Store) SetKey(version int, path, value string) (storeUpdated bool, err 
 // The method returns a boolean flag to indicate whether the store was updated
 // by any of the supplied values.
 func (s *Store) SetKeys(version int, path string, values map[string]string) (storeUpdated bool, err error) {
-	if values == nil || len(values) == 0 {
+	if len(values) == 0 {
 		return false, nil
 	}
 
@@ -306,7 +306,7 @@ func (s *Store) Watch(path string, changeHandler ChangeHandlerFunc) UnsubscribeF
 		numProviders = len(s.providers)
 	}
 	if s.watchers == nil {
-		s.watchers = make(map[string][]*changeWatcher, 0)
+		s.watchers = make(map[string][]*changeWatcher)
 	}
 
 	if s.watchers[path] == nil {
@@ -331,7 +331,7 @@ func (s *Store) Watch(path string, changeHandler ChangeHandlerFunc) UnsubscribeF
 		for index := len(s.providers) - 1; index >= 0; index-- {
 			provider := s.providers[index]
 			values := provider.instance.Get(path)
-			if values != nil && len(values) != 0 {
+			if len(values) != 0 {
 				valueTree, err := flattenedMapToTree(values)
 				if err == nil {
 					modFlag, pathRoot = s.set(index, path, valueTree)
@@ -582,7 +582,7 @@ nextSegment:
 //    }
 //  }
 func flattenedMapToTree(values map[string]string) (map[string]interface{}, error) {
-	root := make(map[string]interface{}, 0)
+	root := make(map[string]interface{})
 	var segmentMap *map[string]interface{}
 	for path, v := range values {
 		if len(path) == 0 {

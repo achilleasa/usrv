@@ -230,7 +230,7 @@ func TestCircuitBreakerWithEventChanWithoutListener(t *testing.T) {
 		TripThreshold:   2,
 		ResetThreshold:  3,
 		CoolOffPeriod:   500 * time.Millisecond,
-		StateChangeChan: make(chan State, 0),
+		StateChangeChan: make(chan State),
 	})
 
 	ctx := context.Background()

@@ -79,7 +79,7 @@ type router struct {
 func newRouter(serviceName string) *router {
 	wr := &router{
 		weightCfg: flag.NewMap(cfgStore, "weighted_router/"+serviceName),
-		doneChan:  make(chan struct{}, 0),
+		doneChan:  make(chan struct{}),
 	}
 
 	// fetch initial weights

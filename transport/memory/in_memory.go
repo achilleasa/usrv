@@ -25,7 +25,7 @@ type Transport struct {
 // New creates a new in-memory transport instance.
 func New() *Transport {
 	return &Transport{
-		bindings: make(map[string]transport.Handler, 0),
+		bindings: make(map[string]transport.Handler),
 	}
 }
 

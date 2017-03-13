@@ -190,10 +190,5 @@ func (c *Client) Request(ctx context.Context, endpoint string, reqMessage, resMe
 	}
 
 	// Unmarshal response in the supplied resMessage instance
-	err = c.unmarshaler(resData, resMessage)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return c.unmarshaler(resData, resMessage)
 }

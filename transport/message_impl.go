@@ -113,7 +113,7 @@ func (m *GenericMessage) SetPayload(payload []byte, err error) {
 func MakeGenericMessage() *GenericMessage {
 	m := msgPool.Get().(*GenericMessage)
 	m.IDField = GenerateID()
-	m.HeadersField = make(map[string]string, 0)
+	m.HeadersField = make(map[string]string)
 	m.PayloadField = nil
 	m.ErrField = nil
 	m.ReceiverVersionField = ""

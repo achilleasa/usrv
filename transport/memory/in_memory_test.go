@@ -15,9 +15,8 @@ func TestInMemoryBindVersions(t *testing.T) {
 	defer tr.Close(transport.ModeServer)
 
 	handler := transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {})
-	var err error
 
-	err = tr.Bind("v0", "service", "endpoint", handler)
+	err := tr.Bind("v0", "service", "endpoint", handler)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +267,7 @@ func benchInMemory(b *testing.B, workers int) {
 	payload := []byte("test payload")
 	msgPerWorker := (b.N / workers) + 1
 
-	start := make(chan struct{}, 0)
+	start := make(chan struct{})
 	var wgStart, wgEnd sync.WaitGroup
 	wgStart.Add(workers)
 	wgEnd.Add(workers * msgPerWorker)

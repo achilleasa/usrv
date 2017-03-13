@@ -44,7 +44,7 @@ func NewEnvVars() *EnvVars {
 //   "port/6379/tcp": "tcp://10.0.0.11:6379",
 //  }
 func (p *EnvVars) Get(path string) map[string]string {
-	cfg := make(map[string]string, 0)
+	cfg := make(map[string]string)
 
 	prefix := strings.Trim(strings.ToUpper(invalidCharRegex.ReplaceAllString(path, "_")), "_") + "_"
 	for _, envvar := range os.Environ() {

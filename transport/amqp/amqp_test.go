@@ -140,7 +140,7 @@ func TestServerDisconnectHandling(t *testing.T) {
 	}()
 
 	mc := &mockChannel{
-		consumeChan: make(chan amqpClient.Delivery, 0),
+		consumeChan: make(chan amqpClient.Delivery),
 	}
 	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
 		return mc, mc, nil, nil
@@ -210,7 +210,7 @@ func TestRequestForInvalidBinding(t *testing.T) {
 	}()
 
 	mc := &mockChannel{
-		consumeChan: make(chan amqpClient.Delivery, 0),
+		consumeChan: make(chan amqpClient.Delivery),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
 	}
 	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
@@ -260,7 +260,7 @@ func TestRequestForValidBinding(t *testing.T) {
 	}()
 
 	mc := &mockChannel{
-		consumeChan: make(chan amqpClient.Delivery, 0),
+		consumeChan: make(chan amqpClient.Delivery),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
 	}
 	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
@@ -285,7 +285,7 @@ func TestRequestForValidBinding(t *testing.T) {
 	}
 
 	// Define binding
-	invokedChan := make(chan struct{}, 0)
+	invokedChan := make(chan struct{})
 	expPayload := []byte("response data")
 	err = tr.Bind("", "service", "remote-endpoint", transport.HandlerFunc(func(reqMsg transport.ImmutableMessage, res transport.Message) {
 		if reqMsg.ID() != req.ID() {
@@ -365,7 +365,7 @@ func TestRequestForValidBindingWhenPublishFails(t *testing.T) {
 	}()
 
 	mc := &mockChannel{
-		consumeChan: make(chan amqpClient.Delivery, 0),
+		consumeChan: make(chan amqpClient.Delivery),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
 	}
 	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
@@ -386,7 +386,7 @@ func TestRequestForValidBindingWhenPublishFails(t *testing.T) {
 	req.ReceiverEndpointField = "remote-endpoint"
 
 	// Define binding
-	invokedChan := make(chan struct{}, 0)
+	invokedChan := make(chan struct{})
 	err = tr.Bind("", "service", "remote-endpoint", transport.HandlerFunc(func(reqMsg transport.ImmutableMessage, res transport.Message) {
 		close(invokedChan)
 	}))
@@ -433,8 +433,8 @@ func TestClientWorkerHandlingOfClosedAmqpChannels(t *testing.T) {
 	}()
 
 	mc := &mockChannel{
-		consumeChan: make(chan amqpClient.Delivery, 0),
-		returnChan:  make(chan amqpClient.Return, 0),
+		consumeChan: make(chan amqpClient.Delivery),
+		returnChan:  make(chan amqpClient.Return),
 		pubQueue:    make(chan amqpClient.Publishing, 2),
 	}
 	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
@@ -450,7 +450,7 @@ func TestClientWorkerHandlingOfClosedAmqpChannels(t *testing.T) {
 	// queue rpc message and then close the response channel
 	rpcReq := &rpc{
 		req:     transport.MakeGenericMessage(),
-		resChan: make(chan transport.ImmutableMessage, 0),
+		resChan: make(chan transport.ImmutableMessage),
 	}
 	tr.outgoingReqChan <- rpcReq
 
@@ -473,7 +473,7 @@ func TestClientWorkerHandlingOfClosedAmqpChannels(t *testing.T) {
 	// queue rpc message and then close the return channel
 	rpcReq = &rpc{
 		req:     transport.MakeGenericMessage(),
-		resChan: make(chan transport.ImmutableMessage, 0),
+		resChan: make(chan transport.ImmutableMessage),
 	}
 	tr.outgoingReqChan <- rpcReq
 
@@ -595,7 +595,7 @@ func TestClientWorkerWhenReceivingResponses(t *testing.T) {
 	}()
 
 	mc := &mockChannel{
-		consumeChan: make(chan amqpClient.Delivery, 0),
+		consumeChan: make(chan amqpClient.Delivery),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
 	}
 	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
@@ -680,7 +680,7 @@ func TestClientWorkerWhenReceivingResponsesWithBogusID(t *testing.T) {
 	}()
 
 	mc := &mockChannel{
-		consumeChan: make(chan amqpClient.Delivery, 0),
+		consumeChan: make(chan amqpClient.Delivery),
 		pubQueue:    make(chan amqpClient.Publishing, 1),
 	}
 	dialAndGetChan = func(_ string) (amqpChannel, io.Closer, chan *amqpClient.Error, error) {
@@ -1392,7 +1392,7 @@ type amqpProxy struct {
 }
 
 func (p *amqpProxy) connWorker(realAmqpHost string) {
-	p.killConnChan = make(chan struct{}, 0)
+	p.killConnChan = make(chan struct{})
 
 	for {
 		srcConn, err := p.proxyListener.Accept()

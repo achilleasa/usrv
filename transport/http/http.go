@@ -219,7 +219,7 @@ type Transport struct {
 // New creates a new http transport instance.
 func New() *Transport {
 	t := &Transport{
-		bindings:      make(map[string]*binding, 0),
+		bindings:      make(map[string]*binding),
 		config:        config.MapFlag("transport/http"),
 		protocol:      config.StringFlag("transport/http/protocol"),
 		port:          config.Uint32Flag("transport/http/port"),
@@ -228,7 +228,7 @@ func New() *Transport {
 		tlsVerify:     config.StringFlag("transport/http/client/verifycert"),
 		tlsStrictMode: config.BoolFlag("transport/http/tls/strict"),
 
-		watcherDoneChan: make(chan struct{}, 0),
+		watcherDoneChan: make(chan struct{}),
 	}
 
 	go t.configChangeMonitor()
@@ -492,13 +492,13 @@ func (t *Transport) dial() error {
 	// Start server goroutine
 	var wg sync.WaitGroup
 	wg.Add(1)
-	t.serverDoneChan = make(chan struct{}, 0)
+	t.serverDoneChan = make(chan struct{})
 	go func(doneChan chan struct{}) {
 		wg.Done()
 		srv := nethttp.Server{
 			Handler:      nethttp.HandlerFunc(t.mux(t.tlsStrictMode.Get())),
 			TLSConfig:    tlsConfig,
-			TLSNextProto: make(map[string]func(*nethttp.Server, *tls.Conn, nethttp.Handler), 0),
+			TLSNextProto: make(map[string]func(*nethttp.Server, *tls.Conn, nethttp.Handler)),
 		}
 		srv.Serve(t.listener)
 		close(doneChan)

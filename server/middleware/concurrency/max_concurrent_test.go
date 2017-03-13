@@ -46,8 +46,8 @@ func TestSingletonFactory(t *testing.T) {
 	}
 	defer srv.Close()
 
-	workStartChan := make(chan struct{}, 0)
-	workDoneChan := make(chan struct{}, 0)
+	workStartChan := make(chan struct{})
+	workDoneChan := make(chan struct{})
 	err = srv.RegisterEndpoints(
 		&server.Endpoint{
 			Name: "ep1",
@@ -201,8 +201,8 @@ func TestFactory(t *testing.T) {
 	}
 	defer srv.Close()
 
-	workStartChan := make(chan struct{}, 0)
-	workDoneChan := make(chan struct{}, 0)
+	workStartChan := make(chan struct{})
+	workDoneChan := make(chan struct{})
 	err = srv.RegisterEndpoints(
 		&server.Endpoint{
 			Name: "ep1",
@@ -321,7 +321,7 @@ func TestSingletonFactoryWithDynamicConfiguration(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	syncChan := make(chan struct{}, 0)
+	syncChan := make(chan struct{})
 	nextFn := server.MiddlewareFunc(func(_ context.Context, req transport.ImmutableMessage, res transport.Message) {
 		wg.Done()
 		<-syncChan

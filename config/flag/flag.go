@@ -44,8 +44,8 @@ type cfgEventToValueMapper func(map[string]string) (interface{}, error)
 func (f *flagImpl) init(store *store.Store, valueMapper cfgEventToValueMapper, cfgPath string) {
 	f.store = store
 	f.valueMapper = valueMapper
-	f.changedChan = make(chan struct{}, 0)
-	f.hasValueChan = make(chan struct{}, 0)
+	f.changedChan = make(chan struct{})
+	f.hasValueChan = make(chan struct{})
 	f.version = -1
 	if f.checkEquality == nil {
 		f.checkEquality = func(v1, v2 interface{}) bool {
