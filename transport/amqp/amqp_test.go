@@ -352,6 +352,8 @@ func TestRequestForValidBinding(t *testing.T) {
 		t.Errorf("expected response appID and userID to be %q, %q; got %q, %q", req.Receiver(), req.ReceiverEndpoint(), pub.AppId, pub.Type)
 	}
 
+	// Allow some time for the handler to ack the request
+	<-time.After(100 * time.Millisecond)
 	expAckCount := 1
 	if mc.AckCount() != expAckCount {
 		t.Errorf("expected ack count to be %d; got %d", expAckCount, mc.AckCount())
