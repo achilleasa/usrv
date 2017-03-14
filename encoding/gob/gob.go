@@ -25,7 +25,7 @@ func (c *gobCodec) Unmarshaler() encoding.Unmarshaler {
 	}
 }
 
-// Codec retuns a codec that implements encoding and decoding of gob data.
+// Codec returns a codec that implements encoding and decoding of gob data.
 func Codec() encoding.Codec {
 	return &gobCodec{}
 }

@@ -40,16 +40,16 @@ type PanicHandler func(error)
 //
 // The server uses a codec instance to marshal and unmarshal the request and
 // response objects accepted by the endpoint handlers into the low-level message
-// format used by the attached transport. Unless overriden by the WithCodec config
+// format used by the attached transport. Unless overridden by the WithCodec config
 // option, the server will invoke usrv.DefaultCodecFactory to fetch a codec instance.
 //
-// Unless overriden with the WithTransport config option, the server will invoke
+// Unless overridden with the WithTransport config option, the server will invoke
 // usrv.DefaultTransportFactory to fetch a transport instance.
 //
-// The server automatically recoveres and handling any panics while a request is
+// The server automatically recovers and handling any panics while a request is
 // being handled. A built-in panic handler implementation is used that simply
 // write the error and stack-trace to DefaultPanicWriter. However, the panic handler
-// can be overriden using the WithPanicHandler config option.
+// can be overridden using the WithPanicHandler config option.
 type Server struct {
 	// A mutext protecting access to the server fields.
 	mutex sync.Mutex
@@ -143,7 +143,7 @@ func (s *Server) Listen() error {
 		return err
 	}
 
-	s.doneChan = make(chan struct{}, 0)
+	s.doneChan = make(chan struct{})
 	s.mutex.Unlock()
 
 	// Wait for a stop signal

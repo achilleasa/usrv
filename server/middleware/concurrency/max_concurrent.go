@@ -173,9 +173,9 @@ type resizableTokenPool struct {
 func newResizableTokenPool(maxTokens *flag.Int32) *resizableTokenPool {
 	pool := &resizableTokenPool{
 		maxTokens:   maxTokens,
-		doneChan:    make(chan struct{}, 0),
-		acquireChan: make(chan struct{}, 0),
-		releaseChan: make(chan struct{}, 0),
+		doneChan:    make(chan struct{}),
+		acquireChan: make(chan struct{}),
+		releaseChan: make(chan struct{}),
 	}
 	pool.spawnWorker()
 	setFinalizer(pool, func(p *resizableTokenPool) { p.Close() })

@@ -108,7 +108,7 @@ func (n *node) leafValues(pathPrefix string, isRoot bool) map[string]string {
 
 	// Recursively build map by calling TreeValues on the child nodes and
 	// merging the maps into a single value map
-	valueMap := make(map[string]string, 0)
+	valueMap := make(map[string]string)
 	for _, subPathNode := range n.paths {
 		for k, v := range subPathNode.leafValues(pathPrefix, false) {
 			valueMap[k] = v
@@ -152,7 +152,7 @@ func (n *node) merge(version int, value interface{}) (modified bool) {
 		// Update the value and clear any existing child nodes
 		n.value, n.modified = mergeValue, true
 		if len(n.paths) != 0 {
-			n.paths = make(map[string]*node, 0)
+			n.paths = make(map[string]*node)
 		}
 
 		return true
@@ -224,7 +224,7 @@ func makeNode(segment string, depth int, parent *node) *node {
 	node := &node{
 		segment: segment,
 		depth:   depth,
-		paths:   make(map[string]*node, 0),
+		paths:   make(map[string]*node),
 		parent:  parent,
 	}
 

@@ -20,7 +20,7 @@ func (c *msgpackCodec) Unmarshaler() encoding.Unmarshaler {
 	}
 }
 
-// Codec retuns a codec that implements encoding and decoding of data using msgpack.
+// Codec returns a codec that implements encoding and decoding of data using msgpack.
 func Codec() encoding.Codec {
 	return &msgpackCodec{}
 }

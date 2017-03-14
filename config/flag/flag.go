@@ -29,7 +29,7 @@ type flagImpl struct {
 	// A channel for receiving notifications when the flag value changes.
 	changedChan chan struct{}
 
-	// A function for cancelling the watcher for this value.
+	// A function for canceling the watcher for this value.
 	unsubscribeFn store.UnsubscribeFunc
 
 	// A function for mapping incoming config events to a value that can be set.
@@ -44,8 +44,8 @@ type cfgEventToValueMapper func(map[string]string) (interface{}, error)
 func (f *flagImpl) init(store *store.Store, valueMapper cfgEventToValueMapper, cfgPath string) {
 	f.store = store
 	f.valueMapper = valueMapper
-	f.changedChan = make(chan struct{}, 0)
-	f.hasValueChan = make(chan struct{}, 0)
+	f.changedChan = make(chan struct{})
+	f.hasValueChan = make(chan struct{})
 	f.version = -1
 	if f.checkEquality == nil {
 		f.checkEquality = func(v1, v2 interface{}) bool {

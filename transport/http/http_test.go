@@ -99,7 +99,7 @@ func TestHTTPClientErrors(t *testing.T) {
 
 	// Request when transport is closed
 	res := <-tr.Request(newMessage("test/producer", "service/endpoint"))
-	if _, err := res.Payload(); err != transport.ErrTransportClosed {
+	if _, err = res.Payload(); err != transport.ErrTransportClosed {
 		t.Fatalf("expected to get error %q; got %v", transport.ErrTransportClosed, err)
 	}
 	res.Close()
@@ -124,7 +124,7 @@ func TestHTTPClientErrors(t *testing.T) {
 	}
 	res = <-tr.Request(newMessage("test/producer", "service/endpoint"))
 	newRequest = origNewRequest
-	if _, err := res.Payload(); err == nil || err.Error() != expError {
+	if _, err = res.Payload(); err == nil || err.Error() != expError {
 		t.Fatalf("expected to get error %q; got %v", expError, err)
 	}
 	res.Close()
@@ -137,7 +137,7 @@ func TestHTTPClientErrors(t *testing.T) {
 	}
 	res = <-tr.Request(newMessage("test/producer", "service/endpoint"))
 	readAll = origReadAll
-	if _, err := res.Payload(); err == nil || err.Error() != expError {
+	if _, err = res.Payload(); err == nil || err.Error() != expError {
 		t.Fatalf("expected to get error %q; got %v", expError, err)
 	}
 
@@ -440,7 +440,7 @@ func TestRPCOverHTTP(t *testing.T) {
 			t.Errorf("header mismatch; expected %v; got %v", expHeaders, headers)
 		}
 
-		// Populate respone
+		// Populate response
 		res.SetPayload([]byte("hello back!"), nil)
 
 		// Add extra user header

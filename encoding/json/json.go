@@ -17,7 +17,7 @@ func (c *jsonCodec) Unmarshaler() encoding.Unmarshaler {
 	return json.Unmarshal
 }
 
-// Codec retuns a codec that implements encoding and decoding of JSON data.
+// Codec returns a codec that implements encoding and decoding of JSON data.
 func Codec() encoding.Codec {
 	return &jsonCodec{}
 }

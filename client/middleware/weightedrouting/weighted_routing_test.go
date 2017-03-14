@@ -138,7 +138,7 @@ func TestRouterLocks(t *testing.T) {
 	versionChan := make(chan string, len(randValues))
 	var wg sync.WaitGroup
 	wg.Add(len(randValues))
-	for _ = range randValues {
+	for range randValues {
 		go func() {
 			req := transport.MakeGenericMessage()
 			defer func() {
@@ -178,7 +178,7 @@ func TestRouterLocks(t *testing.T) {
 	randValues = []float32{0, 0.2999, 0.6999, 0.8, 0.2, 0.9, 0.9999}
 	wg.Add(len(randValues))
 
-	for _ = range randValues {
+	for range randValues {
 		go func() {
 			req := transport.MakeGenericMessage()
 			defer func() {

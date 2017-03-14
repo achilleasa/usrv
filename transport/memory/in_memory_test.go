@@ -15,9 +15,8 @@ func TestInMemoryBindVersions(t *testing.T) {
 	defer tr.Close(transport.ModeServer)
 
 	handler := transport.HandlerFunc(func(_ transport.ImmutableMessage, _ transport.Message) {})
-	var err error
 
-	err = tr.Bind("v0", "service", "endpoint", handler)
+	err := tr.Bind("v0", "service", "endpoint", handler)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +66,7 @@ func TestInMemoryErrors(t *testing.T) {
 	// Send to unknown endpoint
 	resChan := tr.Request(newMessage("test/case", "unknown/endpoint"))
 	res := <-resChan
-	if _, err := res.Payload(); err != transport.ErrNotFound {
+	if _, err = res.Payload(); err != transport.ErrNotFound {
 		t.Fatalf("expected err %v; got %v", transport.ErrNotFound, err)
 	}
 
@@ -164,7 +163,7 @@ func TestInMemoryRPC(t *testing.T) {
 			t.Errorf("header mismatch; expected %v; got %v", expHeaders, headers)
 		}
 
-		// Populate respone
+		// Populate response
 		res.SetPayload([]byte("hello back!"), nil)
 	}
 
@@ -218,7 +217,7 @@ func TestInMemoryRPC(t *testing.T) {
 		t.Errorf("expected payload to be %q; got %q", expValues[0], string(payload))
 	}
 
-	// Try a request with a specific service verison request
+	// Try a request with a specific service version request
 	req.SetReceiverVersion("v0")
 	resChan = tr.Request(req)
 	res = <-resChan
@@ -268,7 +267,7 @@ func benchInMemory(b *testing.B, workers int) {
 	payload := []byte("test payload")
 	msgPerWorker := (b.N / workers) + 1
 
-	start := make(chan struct{}, 0)
+	start := make(chan struct{})
 	var wgStart, wgEnd sync.WaitGroup
 	wgStart.Add(workers)
 	wgEnd.Add(workers * msgPerWorker)
