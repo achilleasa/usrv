@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ func TestClientRequest(t *testing.T) {
 	expGreeting := "hello tester"
 	expReqPayload := `{"name":"tester"}`
 	expResPayload := `{"greeting":"` + expGreeting + `"}`
+	var wg sync.WaitGroup
 	tr.Bind("", "service", "endpoint", transport.HandlerFunc(
 		func(req transport.ImmutableMessage, res transport.Message) {
 			payload, _ := req.Payload()
@@ -51,6 +53,7 @@ func TestClientRequest(t *testing.T) {
 
 			res.SetPayload([]byte(expResPayload), nil)
 			<-time.After(100 * time.Millisecond)
+			wg.Done()
 		}),
 	)
 
@@ -73,6 +76,8 @@ func TestClientRequest(t *testing.T) {
 	reqObj := &request{Name: "tester"}
 	resObj := &response{}
 
+	wg.Add(2)
+
 	// Normal request
 	err = c.Request(context.Background(), "endpoint", reqObj, resObj)
 	if err != nil {
@@ -90,6 +95,8 @@ func TestClientRequest(t *testing.T) {
 	if err != transport.ErrTimeout {
 		t.Fatalf("expected to get error %v; got %v", transport.ErrTimeout, err)
 	}
+
+	wg.Wait()
 }
 
 func TestClientRequestWithServerEndpointCtx(t *testing.T) {
